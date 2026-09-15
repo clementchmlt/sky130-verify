@@ -8,7 +8,7 @@ from pathlib import Path
 
 import jsonschema
 
-from .manifest_backend import MANIFEST_JSON_SCHEMA
+from .verification_manifest import MANIFEST_JSON_SCHEMA
 
 
 def validate_manifest_file(path: Path) -> tuple[bool, list[str]]:

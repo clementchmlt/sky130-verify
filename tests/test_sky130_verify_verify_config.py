@@ -61,21 +61,16 @@ class LoadVerifyConfigTests(unittest.TestCase):
             with self.assertRaises(VerifyConfigError):
                 load_verify_config(config_path, base_dir=root)
 
-    def test_unknown_table_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config_path = root / "verify.toml"
-            config_path.write_text("[bogus]\nx = 1\n")
-            with self.assertRaises(VerifyConfigError):
-                load_verify_config(config_path, base_dir=root)
-
-    def test_unknown_key_in_known_table_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config_path = root / "verify.toml"
-            config_path.write_text('[cell]\nbogus_key = "x"\n')
-            with self.assertRaises(VerifyConfigError):
-                load_verify_config(config_path, base_dir=root)
+    def test_unknown_configuration_fields_are_rejected(self):
+        cases = ("[bogus]\nx = 1\n", '[cell]\nbogus_key = "x"\n')
+        for content in cases:
+            with self.subTest(content=content):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    config_path = root / "verify.toml"
+                    config_path.write_text(content)
+                    with self.assertRaises(VerifyConfigError):
+                        load_verify_config(config_path, base_dir=root)
 
     def test_empty_config_is_valid_all_fields_none(self):
         with tempfile.TemporaryDirectory() as tmp:

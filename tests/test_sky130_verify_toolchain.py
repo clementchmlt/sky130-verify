@@ -19,21 +19,18 @@ def _write_executable(path: Path, script: str) -> None:
 
 
 class ParseLvsLogTests(unittest.TestCase):
-    def test_circuits_match_uniquely_without_property_errors_is_pass(self):
-        self.assertEqual(toolchain.parse_lvs_log("Circuits match uniquely.\n"), "pass")
-
-    def test_property_errors_are_fail(self):
-        text = "Circuits match uniquely.\nWarning: 2 property errors found.\n"
-        self.assertEqual(toolchain.parse_lvs_log(text), "fail")
-
-    def test_explicit_mismatch_markers_are_fail(self):
-        for marker in ("failed pin matching", "Circuits do not match",
-                        "Netlists do not match", "property errors"):
-            with self.subTest(marker=marker):
-                self.assertEqual(toolchain.parse_lvs_log(f"...{marker}...\n"), "fail")
-
-    def test_unrecognized_output_is_unknown(self):
-        self.assertEqual(toolchain.parse_lvs_log("netgen: some unrelated banner\n"), "unknown")
+    def test_log_patterns_map_to_verdicts(self):
+        cases = (
+            ("Circuits match uniquely.\n", "pass"),
+            ("Circuits match uniquely.\nWarning: 2 property errors found.\n", "fail"),
+            ("netgen: failed pin matching\n", "fail"),
+            ("netgen: Circuits do not match\n", "fail"),
+            ("netgen: Netlists do not match\n", "fail"),
+            ("netgen: some unrelated banner\n", "unknown"),
+        )
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(toolchain.parse_lvs_log(text), expected)
 
 
 class AslrGuardCommandTests(unittest.TestCase):
@@ -101,22 +98,18 @@ esac
 """
         _write_executable(self.bindir / "magic", script)
 
-    def test_run_drc_parses_zero_errors_as_pass(self):
-        self._install_fake_magic(drc_errors=0)
-        result = toolchain.run_drc(view=Path("dummy.mag"), cell_format="mag", cell="my_cell",
-                                    magicrc=self.magicrc, pdk_root=self.pdk_root, pdk_variant="sky130A",
-                                    work_dir=self.work_dir, disable_aslr_guard=True)
-        self.assertTrue(result.ok)
-        self.assertEqual(result.error_count, 0)
-        self.assertEqual(result.verdict, "pass")
-
-    def test_run_drc_parses_nonzero_errors_as_fail(self):
-        self._install_fake_magic(drc_errors=3)
-        result = toolchain.run_drc(view=Path("dummy.mag"), cell_format="mag", cell="my_cell",
-                                    magicrc=self.magicrc, pdk_root=self.pdk_root, pdk_variant="sky130A",
-                                    work_dir=self.work_dir, disable_aslr_guard=True)
-        self.assertEqual(result.error_count, 3)
-        self.assertEqual(result.verdict, "fail")
+    def test_run_drc_parses_reported_error_count(self):
+        for errors, verdict in ((0, "pass"), (3, "fail")):
+            with self.subTest(errors=errors):
+                self._install_fake_magic(drc_errors=errors)
+                result = toolchain.run_drc(
+                    view=Path("dummy.mag"), cell_format="mag", cell="my_cell",
+                    magicrc=self.magicrc, pdk_root=self.pdk_root, pdk_variant="sky130A",
+                    work_dir=self.work_dir, disable_aslr_guard=True,
+                )
+                self.assertTrue(result.ok)
+                self.assertEqual(result.error_count, errors)
+                self.assertEqual(result.verdict, verdict)
 
     def test_run_drc_load_failure_is_error(self):
         _write_executable(self.bindir / "magic", "#!/bin/sh\necho 'DRC_LOAD_FAIL boom'\n")
@@ -176,26 +169,20 @@ _RDB_WITH_TWO_VIOLATIONS = """<?xml version="1.0" encoding="utf-8"?>
 class CountRdbViolationsTests(unittest.TestCase):
     """Format taken from a real sky130A_mr.drc run against a real GDS."""
 
-    def test_empty_items_is_zero(self):
+    def test_report_items_are_counted_and_invalid_reports_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "report.xml"
-            report.write_text(_EMPTY_RDB)
-            self.assertEqual(toolchain._count_rdb_violations(report), 0)
-
-    def test_two_items_is_two(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "report.xml"
-            report.write_text(_RDB_WITH_TWO_VIOLATIONS)
-            self.assertEqual(toolchain._count_rdb_violations(report), 2)
-
-    def test_missing_file_is_none(self):
-        self.assertIsNone(toolchain._count_rdb_violations(Path("/does/not/exist.xml")))
-
-    def test_invalid_xml_is_none(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            report = Path(tmp) / "report.xml"
-            report.write_text("not xml at all <<<")
-            self.assertIsNone(toolchain._count_rdb_violations(report))
+            root = Path(tmp)
+            cases = (
+                ("empty", _EMPTY_RDB, 0),
+                ("two items", _RDB_WITH_TWO_VIOLATIONS, 2),
+                ("invalid XML", "not xml at all <<<", None),
+            )
+            for name, content, expected in cases:
+                with self.subTest(name=name):
+                    report = root / f"{name}.xml"
+                    report.write_text(content)
+                    self.assertEqual(toolchain._count_rdb_violations(report), expected)
+            self.assertIsNone(toolchain._count_rdb_violations(root / "missing.xml"))
 
 
 class RunGdsWriteAndKlayoutDrcWithFakeToolsTests(unittest.TestCase):
@@ -216,64 +203,57 @@ class RunGdsWriteAndKlayoutDrcWithFakeToolsTests(unittest.TestCase):
         self.deck = Path(self.tmp.name) / "sky130A_mr.drc"
         self.deck.touch()
 
-    def test_run_gds_write_reports_ok_and_gds_path_on_success(self):
-        _write_executable(self.bindir / "magic", """#!/bin/sh
+    def test_run_gds_write_reports_output_or_error(self):
+        cases = (
+            ("""#!/bin/sh
 echo "GDSWRITE_LOAD_OK"
 echo "fake gds bytes" > converted.gds
 echo "GDSWRITE_OK"
-""")
-        result = toolchain.run_gds_write(view=self.work_dir / "my_cell.mag", cell="my_cell",
-                                          magicrc=self.magicrc, pdk_root=self.pdk_root,
-                                          pdk_variant="sky130A", work_dir=self.work_dir)
-        self.assertTrue(result.ok)
-        self.assertEqual(result.gds_path.name, "converted.gds")
+""", True),
+            ('#!/bin/sh\necho "GDSWRITE_LOAD_FAIL boom"\n', False),
+        )
+        for script, expected_ok in cases:
+            with self.subTest(ok=expected_ok):
+                _write_executable(self.bindir / "magic", script)
+                result = toolchain.run_gds_write(
+                    view=self.work_dir / "my_cell.mag", cell="my_cell", magicrc=self.magicrc,
+                    pdk_root=self.pdk_root, pdk_variant="sky130A", work_dir=self.work_dir,
+                )
+                self.assertEqual(result.ok, expected_ok)
+                if expected_ok:
+                    self.assertEqual(result.gds_path.name, "converted.gds")
+                else:
+                    self.assertIsNone(result.gds_path)
 
-    def test_run_gds_write_load_failure_is_error(self):
-        _write_executable(self.bindir / "magic", '#!/bin/sh\necho "GDSWRITE_LOAD_FAIL boom"\n')
-        result = toolchain.run_gds_write(view=self.work_dir / "my_cell.mag", cell="my_cell",
-                                          magicrc=self.magicrc, pdk_root=self.pdk_root,
-                                          pdk_variant="sky130A", work_dir=self.work_dir)
-        self.assertFalse(result.ok)
-        self.assertIsNone(result.gds_path)
-
-    def test_run_klayout_drc_zero_violations_is_pass(self):
-        _write_executable(self.bindir / "klayout", f"""#!/bin/sh
+    def test_run_klayout_drc_reports_verdict_or_error(self):
+        cases = (
+            (f"""#!/bin/sh
 for a in "$@"; do
   case "$a" in
     report=*) echo '{_EMPTY_RDB}' > "${{a#report=}}" ;;
   esac
 done
-""")
-        gds = self.work_dir / "converted.gds"
-        gds.touch()
-        result = toolchain.run_klayout_drc(gds=gds, cell="my_cell", deck=self.deck,
-                                            work_dir=self.work_dir)
-        self.assertEqual(result.verdict, "pass")
-        self.assertEqual(result.violation_count, 0)
-
-    def test_run_klayout_drc_violations_are_fail(self):
-        _write_executable(self.bindir / "klayout", f"""#!/bin/sh
+""", "pass", 0),
+            (f"""#!/bin/sh
 for a in "$@"; do
   case "$a" in
     report=*) echo '{_RDB_WITH_TWO_VIOLATIONS}' > "${{a#report=}}" ;;
   esac
 done
-""")
+""", "fail", 2),
+            ("#!/bin/sh\nexit 0\n", "error", None),
+        )
         gds = self.work_dir / "converted.gds"
         gds.touch()
-        result = toolchain.run_klayout_drc(gds=gds, cell="my_cell", deck=self.deck,
-                                            work_dir=self.work_dir)
-        self.assertEqual(result.verdict, "fail")
-        self.assertEqual(result.violation_count, 2)
-
-    def test_run_klayout_drc_missing_report_is_error(self):
-        _write_executable(self.bindir / "klayout", "#!/bin/sh\nexit 0\n")
-        gds = self.work_dir / "converted.gds"
-        gds.touch()
-        result = toolchain.run_klayout_drc(gds=gds, cell="my_cell", deck=self.deck,
-                                            work_dir=self.work_dir)
-        self.assertEqual(result.verdict, "error")
-        self.assertIsNone(result.violation_count)
+        for script, verdict, violations in cases:
+            with self.subTest(verdict=verdict):
+                (self.work_dir / "klayout-drc-report.xml").unlink(missing_ok=True)
+                _write_executable(self.bindir / "klayout", script)
+                result = toolchain.run_klayout_drc(
+                    gds=gds, cell="my_cell", deck=self.deck, work_dir=self.work_dir,
+                )
+                self.assertEqual(result.verdict, verdict)
+                self.assertEqual(result.violation_count, violations)
 
 
 if __name__ == "__main__":

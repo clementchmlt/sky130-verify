@@ -52,54 +52,33 @@ class ManifestValidateTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertTrue(errors)
 
-    def test_manifest_with_merged_drc_lvs_verdict_field_is_rejected(self):
-        broken = _broken()
-        broken["verification"]["verdict"] = "clean"
-        ok, _ = validate_manifest_file(_write_manifest(broken))
-        self.assertFalse(ok)
-
-    def test_malformed_sha256_in_inputs_is_rejected(self):
-        for bad_hash in ("not-hex-at-all", "abc123", "g" * 64, "a" * 63, "A" * 64):
-            with self.subTest(bad_hash=bad_hash):
-                broken = _broken()
-                broken["inputs"] = {"cells/my_cell/my_cell.mag": bad_hash}
-                ok, errors = validate_manifest_file(_write_manifest(broken))
+    def test_invalid_manifest_variants_are_rejected(self):
+        cases = []
+        merged_verdict = _broken()
+        merged_verdict["verification"]["verdict"] = "clean"
+        cases.append(("merged verdict", merged_verdict))
+        cases.extend((
+            (f"input digest {value!r}", _broken(inputs={"cells/my_cell/my_cell.mag": value}))
+            for value in ("not-hex-at-all", "abc123", "g" * 64, "a" * 63, "A" * 64)
+        ))
+        cases.extend((
+            (f"PDK commit {value!r}", _broken(pdk={**_VALID_MANIFEST["pdk"], "commit_sha": value}))
+            for value in ("deadbeef", "z" * 40, "", "a" * 39)
+        ))
+        for field in ("drc_verdict", "lvs_verdict"):
+            invalid_verdict = _broken()
+            invalid_verdict["verification"][field] = "clean"
+            cases.append((f"{field} enum", invalid_verdict))
+        cases.extend((
+            ("absolute input path", _broken(inputs={"/etc/passwd": "c" * 64})),
+            ("artifact traversal", _broken(artifacts={"../../etc/passwd": "d" * 64})),
+            ("non-Git source commit", _broken(source={**_VALID_MANIFEST["source"], "commit": "HEAD"})),
+        ))
+        for name, manifest in cases:
+            with self.subTest(name=name):
+                ok, errors = validate_manifest_file(_write_manifest(manifest))
                 self.assertFalse(ok)
                 self.assertTrue(errors)
-
-    def test_malformed_pdk_commit_sha_is_rejected(self):
-        for bad_sha in ("deadbeef", "z" * 40, "", "a" * 39):
-            with self.subTest(bad_sha=bad_sha):
-                broken = _broken()
-                broken["pdk"]["commit_sha"] = bad_sha
-                ok, _ = validate_manifest_file(_write_manifest(broken))
-                self.assertFalse(ok)
-
-    def test_unknown_verdict_enum_value_is_rejected(self):
-        for field_name in ("drc_verdict", "lvs_verdict"):
-            with self.subTest(field=field_name):
-                broken = _broken()
-                broken["verification"][field_name] = "clean"  # not in the closed enum
-                ok, _ = validate_manifest_file(_write_manifest(broken))
-                self.assertFalse(ok)
-
-    def test_absolute_path_in_inputs_key_is_rejected(self):
-        broken = _broken()
-        broken["inputs"] = {"/etc/passwd": "c" * 64}
-        ok, _ = validate_manifest_file(_write_manifest(broken))
-        self.assertFalse(ok)
-
-    def test_path_traversal_in_artifacts_key_is_rejected(self):
-        broken = _broken()
-        broken["artifacts"] = {"../../etc/passwd": "d" * 64}
-        ok, _ = validate_manifest_file(_write_manifest(broken))
-        self.assertFalse(ok)
-
-    def test_non_git_source_commit_is_rejected(self):
-        broken = _broken()
-        broken["source"]["commit"] = "HEAD"
-        ok, _ = validate_manifest_file(_write_manifest(broken))
-        self.assertFalse(ok)
 
     def test_render_markdown_includes_cell_id_and_both_verdicts_separately(self):
         text = render_manifest_markdown(_write_manifest(_VALID_MANIFEST))

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import badge, doctor, exitcodes, gitinfo, toolchain
-from .manifest_backend import ManifestValidationError, Pdk, Source, Verification, VerificationManifest
+from .verification_manifest import ManifestValidationError, Pdk, Source, Verification, VerificationManifest
 from .verify_config import VerifyConfig, VerifyConfigError, find_verify_config, load_verify_config
 
 _LAYOUT_SUFFIXES = (".mag", ".gds")
@@ -418,6 +418,7 @@ def _run_check(
     netgen_setup_hash = sha256_file(netgen_setup)
     drc_tcl_hash = sha256_file(toolchain.TCL_DIR / "drc.tcl")
     extract_tcl_hash = sha256_file(toolchain.TCL_DIR / "extract.tcl")
+    gdswrite_tcl_hash = sha256_file(toolchain.TCL_DIR / "gdswrite.tcl")
 
     # See toolchain.run_extraction: Magic loads .mag cells by name.
     if inputs.cell_format == "mag":
@@ -441,8 +442,8 @@ def _run_check(
         ),
         lambda r: {"ok": r.ok, "error_count": r.error_count, "verdict": r.verdict,
                    "log_path": str(r.command.log_path), "argv": list(r.command.argv)},
-        lambda d: _FakeResult(ok=d["ok"], error_count=d["error_count"], verdict=d["verdict"],
-                               log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
+        lambda d: _CachedStepResult(ok=d["ok"], error_count=d["error_count"], verdict=d["verdict"],
+                                    log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
     )
     run_log["steps"].append({"name": "drc", "cached": drc_cached, "wall_seconds": drc_seconds,
                               "verdict": drc_result.verdict, "argv": list(drc_result.argv)})
@@ -458,27 +459,29 @@ def _run_check(
         ),
         lambda r: {"ok": r.ok, "spice_path": str(r.spice_path) if r.spice_path else None,
                    "log_path": str(r.command.log_path), "argv": list(r.command.argv)},
-        lambda d: _FakeResult(ok=d["ok"], spice_path=Path(d["spice_path"]) if d["spice_path"] else None,
-                               log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
+        lambda d: _CachedStepResult(
+            ok=d["ok"], output_path=Path(d["spice_path"]) if d["spice_path"] else None,
+            log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
     )
     run_log["steps"].append({"name": "extract", "cached": extract_cached, "wall_seconds": extract_seconds,
                               "ok": extract_result.ok, "argv": list(extract_result.argv)})
 
-    if extract_result.ok and extract_result.spice_path and extract_result.spice_path.is_file():
-        lvs_key = sha256_text("lvs", extract_result.spice_path.name, sha256_file(extract_result.spice_path),
+    if extract_result.ok and extract_result.output_path and extract_result.output_path.is_file():
+        lvs_key = sha256_text("lvs", extract_result.output_path.name, sha256_file(extract_result.output_path),
                                schematic_hash, netgen_version, netgen_binary_hash, report.pdk.commit_sha or "", pdk_variant,
                                netgen_setup_hash)
         lvs_result, lvs_cached, lvs_seconds = _cached_step(
             cache_dir, "lvs", lvs_key, use_cache,
             lambda: toolchain.run_lvs(
-                extracted_spice=extract_result.spice_path, golden_spice=inputs.schematic,
+                extracted_spice=extract_result.output_path, golden_spice=inputs.schematic,
                 cell=inputs.cell, netgen_setup=netgen_setup, pdk_root=pdk_root_path,
                 pdk_variant=pdk_variant, work_dir=work_dir,
             ),
             lambda r: {"verdict": r.verdict, "log_path": str(r.command.log_path), "argv": list(r.command.argv),
                        "comparison_path": str(r.comparison_path) if r.comparison_path else None},
-            lambda d: _FakeResult(verdict=d["verdict"], log_path=Path(d["log_path"]), argv=tuple(d["argv"]),
-                                   comparison_path=Path(d["comparison_path"]) if d.get("comparison_path") else None),
+            lambda d: _CachedStepResult(
+                verdict=d["verdict"], log_path=Path(d["log_path"]), argv=tuple(d["argv"]),
+                comparison_path=Path(d["comparison_path"]) if d.get("comparison_path") else None),
         )
         lvs_verdict = lvs_result.verdict
         lvs_log = lvs_result.log_path
@@ -502,7 +505,11 @@ def _run_check(
         },
         "pdk_commit_source": report.pdk.commit_source,
         "pdk_files": {"magicrc_sha256": magicrc_hash, "netgen_setup_sha256": netgen_setup_hash},
-        "scripts": {"drc_tcl_sha256": drc_tcl_hash, "extract_tcl_sha256": extract_tcl_hash},
+        "scripts": {
+            "drc_tcl_sha256": drc_tcl_hash,
+            "extract_tcl_sha256": extract_tcl_hash,
+            "gdswrite_tcl_sha256": gdswrite_tcl_hash,
+        },
     }
 
     # Record the informative KLayout DRC cross-check separately from Magic.
@@ -513,7 +520,8 @@ def _run_check(
             klayout_gds = inputs.layout
         else:
             gdswrite_key = sha256_text("gdswrite", layout_hash, magic_version, magic_binary_hash,
-                                        report.pdk.commit_sha or "", pdk_variant, magicrc_hash)
+                                        report.pdk.commit_sha or "", pdk_variant, magicrc_hash,
+                                        gdswrite_tcl_hash)
             gdswrite_result, gdswrite_cached, gdswrite_seconds = _cached_step(
                 cache_dir, "gdswrite", gdswrite_key, use_cache,
                 lambda: toolchain.run_gds_write(
@@ -523,15 +531,15 @@ def _run_check(
                 ),
                 lambda r: {"ok": r.ok, "gds_path": str(r.gds_path) if r.gds_path else None,
                            "log_path": str(r.command.log_path), "argv": list(r.command.argv)},
-                lambda d: _FakeResult(ok=d["ok"],
-                                       spice_path=Path(d["gds_path"]) if d["gds_path"] else None,
-                                       log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
+                lambda d: _CachedStepResult(
+                    ok=d["ok"], output_path=Path(d["gds_path"]) if d["gds_path"] else None,
+                    log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
             )
             run_log["steps"].append({"name": "gdswrite", "cached": gdswrite_cached,
                                       "wall_seconds": gdswrite_seconds, "ok": gdswrite_result.ok,
                                       "argv": list(gdswrite_result.argv)})
-            if gdswrite_result.ok and gdswrite_result.spice_path:
-                klayout_gds = gdswrite_result.spice_path
+            if gdswrite_result.ok and gdswrite_result.output_path:
+                klayout_gds = gdswrite_result.output_path
 
         if klayout_gds is not None:
             klayout_drc_result = toolchain.run_klayout_drc(
@@ -648,13 +656,12 @@ def _run_check(
 
 
 @dataclass(frozen=True)
-class _FakeResult:
-    """Reconstructs a toolchain result from cache with only the fields
-    ``_run_check`` reads."""
+class _CachedStepResult:
+    """Normalized result reconstructed from a cache entry."""
     ok: bool = True
     error_count: int | None = None
     verdict: str = "unknown"
-    spice_path: Path | None = None
+    output_path: Path | None = None
     comparison_path: Path | None = None
     log_path: Path = field(default_factory=lambda: Path("."))
     argv: tuple[str, ...] = ()
@@ -667,12 +674,12 @@ def _cached_step(cache_dir: Path, kind: str, key: str, use_cache: bool, run, to_
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             result = from_dict(data)
             log_path = getattr(result, "log_path", None)
-            spice_path = getattr(result, "spice_path", None)
+            output_path = getattr(result, "output_path", None)
             comparison_path = getattr(result, "comparison_path", None)
             # Only reusable if the files it references still exist.
             if (
                 (log_path is None or Path(log_path).is_file())
-                and (spice_path is None or Path(spice_path).is_file())
+                and (output_path is None or Path(output_path).is_file())
                 and (comparison_path is None or Path(comparison_path).is_file())
             ):
                 return result, True, 0.0

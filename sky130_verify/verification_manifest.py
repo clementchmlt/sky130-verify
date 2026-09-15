@@ -137,7 +137,7 @@ class VerificationManifest:
 
 MANIFEST_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://sky130-analog-golden.org/schema/verification-manifest-1.0.0.json",
+    "$id": "https://github.com/clementchmlt/sky130-verify/schema/verification-manifest-1.0.0.json",
     "title": "Sky130 verification manifest",
     "type": "object",
     "additionalProperties": False,

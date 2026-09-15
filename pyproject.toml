@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sky130-verify"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Headless DRC/LVS verification of a single Sky130A cell, with a provenance manifest and badge."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,6 +34,9 @@ sky130-verify = "sky130_verify.cli:main"
 
 [tool.setuptools]
 packages = ["sky130_verify"]
+
+[tool.setuptools.dynamic]
+version = {attr = "sky130_verify.__version__"}
 
 [tool.setuptools.package-data]
 sky130_verify = ["tcl/*.tcl"]

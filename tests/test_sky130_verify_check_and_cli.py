@@ -30,7 +30,7 @@ def _git(*args: str, cwd: Path) -> None:
 
 
 class ResolveCellInputsTests(unittest.TestCase):
-    def test_directory_with_one_layout_and_one_schematic_is_resolved(self):
+    def test_directory_input_is_resolved_or_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             cell_dir = Path(tmp)
             (cell_dir / "foo.mag").touch()
@@ -38,8 +38,6 @@ class ResolveCellInputsTests(unittest.TestCase):
             inputs = resolve_cell_inputs(cell_dir, cell_override=None, schematic_override=None)
             self.assertEqual(inputs.cell, "foo")
             self.assertEqual(inputs.cell_format, "mag")
-
-    def test_ambiguous_directory_with_two_layouts_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             cell_dir = Path(tmp)
             (cell_dir / "foo.mag").touch()
@@ -47,8 +45,6 @@ class ResolveCellInputsTests(unittest.TestCase):
             (cell_dir / "foo.spice").touch()
             with self.assertRaises(UsageError):
                 resolve_cell_inputs(cell_dir, cell_override=None, schematic_override=None)
-
-    def test_missing_schematic_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             cell_dir = Path(tmp)
             (cell_dir / "foo.mag").touch()
@@ -57,22 +53,15 @@ class ResolveCellInputsTests(unittest.TestCase):
 
 
 class NormalizeRepositoryUrlTests(unittest.TestCase):
-    """SCP-like SSH remotes (git@host:path) must normalize, not crash."""
-
-    def test_scp_like_ssh_url_is_normalized_to_a_canonical_uri(self):
-        self.assertEqual(
-            normalize_repository_url("git@github.com:example-org/example-repo.git"),
-            "ssh://git@github.com/example-org/example-repo.git",
+    def test_repository_url_normalization(self):
+        cases = (
+            ("git@github.com:example-org/example-repo.git", "ssh://git@github.com/example-org/example-repo.git"),
+            ("https://example.com/repo.git", "https://example.com/repo.git"),
+            ("example.com/repo.git", "example.com/repo.git"),
         )
-
-    def test_url_already_containing_a_scheme_is_returned_unchanged(self):
-        self.assertEqual(
-            normalize_repository_url("https://example.com/repo.git"),
-            "https://example.com/repo.git",
-        )
-
-    def test_unrecognized_repository_url_is_unchanged(self):
-        self.assertEqual(normalize_repository_url("example.com/repo.git"), "example.com/repo.git")
+        for value, expected in cases:
+            with self.subTest(value=value):
+                self.assertEqual(normalize_repository_url(value), expected)
 
 
 class RunCheckEndToEndWithFakeToolchainTests(unittest.TestCase):
@@ -138,6 +127,7 @@ esac
         self.assertIn("netgen_setup_sha256", manifest["toolchain"]["pdk_files"])
         self.assertIn("drc_tcl_sha256", manifest["toolchain"]["scripts"])
         self.assertIn("extract_tcl_sha256", manifest["toolchain"]["scripts"])
+        self.assertIn("gdswrite_tcl_sha256", manifest["toolchain"]["scripts"])
         self.assertIn("sha256", manifest["toolchain"]["executables"]["magic"])
         self.assertIn("sha256", manifest["toolchain"]["executables"]["netgen"])
         self.assertIn("out/run.json", manifest["artifacts"])
@@ -293,29 +283,20 @@ class EarlyValidationTests(unittest.TestCase):
         kwargs.update(overrides)
         return run_check(**kwargs)
 
-    def test_malformed_pdk_commit_is_rejected_before_any_doctor_or_toolchain_call(self):
-        outcome = self._run(pdk_commit="not-a-sha")
-        self.assertEqual(outcome.exit_code, exitcodes.USAGE_ERROR)
-        self.assertIn("--pdk-commit", outcome.message)
+    def test_argument_validation(self):
+        rejected = (
+            ({"pdk_commit": "not-a-sha"}, "--pdk-commit"),
+            ({"source_repository": "https://example.com/x.git", "source_commit": "short"}, "--source-commit"),
+            ({"source_repository": "example.com/x.git", "source_commit": "a" * 40}, "--source-repository"),
+            ({"cell_override": "my cell; rm -rf /"}, "--cell"),
+        )
+        for options, expected_message in rejected:
+            with self.subTest(options=options):
+                outcome = self._run(**options)
+                self.assertEqual(outcome.exit_code, exitcodes.USAGE_ERROR)
+                self.assertIn(expected_message, outcome.message)
 
-    def test_malformed_source_commit_is_rejected(self):
-        outcome = self._run(source_repository="https://example.com/x.git", source_commit="short")
-        self.assertEqual(outcome.exit_code, exitcodes.USAGE_ERROR)
-        self.assertIn("--source-commit", outcome.message)
-
-    def test_source_repository_without_scheme_is_rejected(self):
-        outcome = self._run(source_repository="example.com/x.git", source_commit="a" * 40)
-        self.assertEqual(outcome.exit_code, exitcodes.USAGE_ERROR)
-        self.assertIn("--source-repository", outcome.message)
-
-    def test_unsafe_cell_name_is_rejected(self):
-        outcome = self._run(cell_override="my cell; rm -rf /")
-        self.assertEqual(outcome.exit_code, exitcodes.USAGE_ERROR)
-        self.assertIn("--cell", outcome.message)
-
-    def test_explicit_scp_like_ssh_source_repository_flag_is_accepted(self):
-        outcome = self._run(source_repository="git@example.com:org/repo.git",
-                             source_commit="a" * 40)
+        outcome = self._run(source_repository="git@example.com:org/repo.git", source_commit="a" * 40)
         self.assertNotEqual(outcome.exit_code, exitcodes.USAGE_ERROR)
 
 
@@ -347,35 +328,28 @@ class RunCheckExceptionEnvelopeTests(unittest.TestCase):
         os.environ["PATH"] = f"{self.bindir}{os.pathsep}{self.old_path}"
         self.addCleanup(lambda: os.environ.__setitem__("PATH", self.old_path))
 
-    def _run(self):
+    def _run(self, *, out_dir: Path | None = None):
         return run_check(
-            target=self.cell_dir, out_dir=self.cell_dir / "out", pdk_root=str(self.pdk_root),
+            target=self.cell_dir, out_dir=out_dir or self.cell_dir / "out", pdk_root=str(self.pdk_root),
             pdk_variant="sky130A", pdk_commit="a" * 40,
             cell_override=None, schematic_override=None,
             source_repository="https://example.com/repo.git", source_commit="a" * 40,
             dry_run=False, disable_aslr_guard=True,
         )
 
-    def test_subprocess_timeout_returns_timeout_outcome(self):
+    def test_tool_exceptions_return_structured_outcomes(self):
         from sky130_verify import toolchain
 
-        with unittest.mock.patch.object(
-            toolchain, "run_drc",
-            side_effect=subprocess.TimeoutExpired(cmd=["magic", "-dnull"], timeout=600),
-        ):
-            outcome = self._run()
-        self.assertEqual(outcome.exit_code, exitcodes.TOOL_FAILURE)
-        self.assertEqual(outcome.status, "timeout")
-
-    def test_os_error_returns_tool_error_outcome(self):
-        from sky130_verify import toolchain
-
-        with unittest.mock.patch.object(
-            toolchain, "run_drc", side_effect=OSError("disque plein"),
-        ):
-            outcome = self._run()
-        self.assertEqual(outcome.exit_code, exitcodes.TOOL_FAILURE)
-        self.assertEqual(outcome.status, "tool_error")
+        cases = (
+            (subprocess.TimeoutExpired(cmd=["magic", "-dnull"], timeout=600), "timeout"),
+            (OSError("disk full"), "tool_error"),
+        )
+        for error, expected_status in cases:
+            with self.subTest(status=expected_status):
+                with unittest.mock.patch.object(toolchain, "run_drc", side_effect=error):
+                    outcome = self._run(out_dir=self.cell_dir / f"out-{expected_status}")
+                self.assertEqual(outcome.exit_code, exitcodes.TOOL_FAILURE)
+                self.assertEqual(outcome.status, expected_status)
 
 
 _EMPTY_KLAYOUT_RDB = """<?xml version="1.0" encoding="utf-8"?>
@@ -464,6 +438,35 @@ done
     def test_without_the_flag_no_cross_check_appears_at_all(self):
         outcome = self._run(with_klayout=False)
         self.assertNotIn("klayout_cross_check", outcome.manifest["toolchain"])
+
+    def test_changed_gdswrite_script_invalidates_conversion_cache(self):
+        from sky130_verify import toolchain
+
+        tcl_dir = self.root / "tcl"
+        tcl_dir.mkdir()
+        for name in ("drc.tcl", "extract.tcl", "gdswrite.tcl"):
+            (tcl_dir / name).write_text(name + "\n")
+        invocation_log = self.root / "magic-invocations.log"
+        _write_executable(self.bindir / "magic", f"""#!/bin/sh
+echo "$*" >> {invocation_log}
+case "$*" in
+  *drc.tcl*) echo "DRC_LOAD_OK"; echo "DRC_RUN_OK"; echo "Total DRC errors found: 1" ;;
+  *extract.tcl*)
+    echo "EXTRACT_LOAD_OK"; echo "EXTRACT_RUN_OK"
+    printf '.subckt %s a\\n.ends\\n' "$SKY130VERIFY_CELL" > "$SKY130VERIFY_CELL.spice" ;;
+  *gdswrite.tcl*) echo "GDSWRITE_LOAD_OK"; echo "fake" > converted.gds; echo "GDSWRITE_OK" ;;
+esac
+""")
+        with unittest.mock.patch.object(toolchain, "TCL_DIR", tcl_dir):
+            self.assertEqual(self._run().exit_code, exitcodes.NOT_CLEAN)
+            self.assertEqual(self._run().exit_code, exitcodes.NOT_CLEAN)
+            gdswrite_calls = lambda: sum(
+                "gdswrite.tcl" in line for line in invocation_log.read_text().splitlines()
+            )
+            self.assertEqual(gdswrite_calls(), 1)
+            (tcl_dir / "gdswrite.tcl").write_text("revised gds conversion\n")
+            self.assertEqual(self._run().exit_code, exitcodes.NOT_CLEAN)
+            self.assertEqual(gdswrite_calls(), 2)
 
 
 class VerifyTomlIntegrationTests(unittest.TestCase):

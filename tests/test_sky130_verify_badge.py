@@ -11,20 +11,18 @@ from sky130_verify import badge  # noqa: E402
 
 
 class ColorForVerdictsTests(unittest.TestCase):
-    def test_both_pass_is_green(self):
-        self.assertEqual(badge.color_for_verdicts("pass", "pass").name, "brightgreen")
-
-    def test_any_fail_is_red(self):
-        self.assertEqual(badge.color_for_verdicts("pass", "fail").name, "red")
-        self.assertEqual(badge.color_for_verdicts("fail", "pass").name, "red")
-
-    def test_any_error_is_red(self):
-        self.assertEqual(badge.color_for_verdicts("error", "pass").name, "red")
-
-    def test_unknown_or_not_run_without_fail_or_error_is_yellow_not_green(self):
-        # Incomplete DRC output is yellow.
-        self.assertEqual(badge.color_for_verdicts("pass", "not_run").name, "yellow")
-        self.assertEqual(badge.color_for_verdicts("unknown", "unknown").name, "yellow")
+    def test_verdict_pairs_select_expected_color(self):
+        cases = (
+            ("pass", "pass", "brightgreen"),
+            ("pass", "fail", "red"),
+            ("fail", "pass", "red"),
+            ("error", "pass", "red"),
+            ("pass", "not_run", "yellow"),
+            ("unknown", "unknown", "yellow"),
+        )
+        for drc, lvs, expected in cases:
+            with self.subTest(drc=drc, lvs=lvs):
+                self.assertEqual(badge.color_for_verdicts(drc, lvs).name, expected)
 
 
 class EndpointJsonTests(unittest.TestCase):
