@@ -53,7 +53,7 @@ class LoadVerifyConfigTests(unittest.TestCase):
             with self.assertRaises(VerifyConfigError):
                 load_verify_config(config_path, base_dir=root)
 
-    def test_invalid_toml_syntax_is_rejected_not_guessed(self):
+    def test_invalid_toml_syntax_is_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             config_path = root / "verify.toml"

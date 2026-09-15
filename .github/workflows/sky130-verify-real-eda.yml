@@ -7,6 +7,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 env:
   PDK_COMMIT: d7c3a52fba997de2bfc15c375a052215528216ac
 
@@ -14,7 +17,7 @@ jobs:
   real-check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Build the sky130-verify image (real Magic/Netgen)
         run: docker build -t sky130-verify .
@@ -86,7 +89,7 @@ jobs:
 
       - name: Upload manifests and logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: sky130-verify-real-eda-proof
           path: |

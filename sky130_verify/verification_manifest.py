@@ -114,7 +114,7 @@ class VerificationManifest:
         _hash_map(self.artifacts, "artifacts")
 
     def to_dict(self) -> dict[str, Any]:
-        """Serializes the eight fields, in their contractual order."""
+        """Serialize the eight fields in schema order."""
         return {
             "schema_version": self.schema_version,
             "cell_id": self.cell_id,

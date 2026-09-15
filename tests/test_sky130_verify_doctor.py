@@ -149,7 +149,7 @@ class DoctorReportTests(unittest.TestCase):
         report = doctor.run_doctor(None, "sky130A")
         self.assertFalse(report.ok)
 
-    def test_missing_aslr_guard_does_not_block_readiness(self):
+    def test_aslr_guard_is_optional(self):
         base_kwargs = dict(
             platform_machine="x86_64", platform_system="Linux", python_version="3.12.0",
             tools=(doctor.ToolStatus("magic", True, "/usr/bin/magic", "8.3.500", True),

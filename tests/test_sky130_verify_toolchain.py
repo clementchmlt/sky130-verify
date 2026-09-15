@@ -22,7 +22,7 @@ class ParseLvsLogTests(unittest.TestCase):
     def test_circuits_match_uniquely_without_property_errors_is_pass(self):
         self.assertEqual(toolchain.parse_lvs_log("Circuits match uniquely.\n"), "pass")
 
-    def test_circuits_match_uniquely_with_property_errors_is_fail_not_pass(self):
+    def test_property_errors_are_fail(self):
         text = "Circuits match uniquely.\nWarning: 2 property errors found.\n"
         self.assertEqual(toolchain.parse_lvs_log(text), "fail")
 
@@ -228,7 +228,7 @@ echo "GDSWRITE_OK"
         self.assertTrue(result.ok)
         self.assertEqual(result.gds_path.name, "converted.gds")
 
-    def test_run_gds_write_load_failure_returns_not_ok(self):
+    def test_run_gds_write_load_failure_is_error(self):
         _write_executable(self.bindir / "magic", '#!/bin/sh\necho "GDSWRITE_LOAD_FAIL boom"\n')
         result = toolchain.run_gds_write(view=self.work_dir / "my_cell.mag", cell="my_cell",
                                           magicrc=self.magicrc, pdk_root=self.pdk_root,

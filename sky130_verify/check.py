@@ -427,8 +427,7 @@ def _run_check(
         view_for_magic = inputs.layout
 
     run_log: dict[str, Any] = {"state": "running", "steps": []}
-    # Written before the first subprocess, so a Ctrl-C or crash leaves an
-    # honest "running" state requiring --resume or --force.
+    # Persist the running state before invoking a subprocess.
     _write_json_atomic(out_dir / "run.json", run_log)
 
     drc_key = sha256_text("drc", layout_hash, magic_version, magic_binary_hash, report.pdk.commit_sha or "", pdk_variant,

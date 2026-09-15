@@ -48,7 +48,7 @@ class ResolveCellInputsTests(unittest.TestCase):
             with self.assertRaises(UsageError):
                 resolve_cell_inputs(cell_dir, cell_override=None, schematic_override=None)
 
-    def test_missing_schematic_is_a_usage_error_not_a_fabricated_pass(self):
+    def test_missing_schematic_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             cell_dir = Path(tmp)
             (cell_dir / "foo.mag").touch()
@@ -146,7 +146,7 @@ esac
         self.assertEqual(badge_data["manifest_sha256"],
                          hashlib.sha256((out_dir / "manifest.json").read_bytes()).hexdigest())
 
-    def test_relative_out_dir_does_not_break_netgen_invoked_with_a_different_cwd(self):
+    def test_relative_out_dir_resolves_for_netgen(self):
         # netgen runs with cwd=work_dir; a relative --out must not leave
         # the extracted SPICE file unresolvable from there.
         _write_executable(self.bindir / "netgen", """#!/bin/sh
@@ -272,7 +272,7 @@ echo "device/pin correspondence" > "$6"
         self.assertIn("--source-repository", outcome.message)
 
 
-class EarlyValidationNeverInvokesToolchainTests(unittest.TestCase):
+class EarlyValidationTests(unittest.TestCase):
     """A malformed argument is rejected before any DRC/LVS run."""
 
     def setUp(self):
@@ -655,7 +655,7 @@ echo "Circuits match uniquely."
         return sum(1 for line in text.splitlines() if "drc.tcl" in line or "extract.tcl" in line
                    or "lvs" in line)
 
-    def test_second_identical_run_does_not_reinvoke_drc_extraction_or_lvs(self):
+    def test_second_identical_run_reuses_drc_extraction_and_lvs(self):
         first = self._run()
         self.assertEqual(first.exit_code, exitcodes.OK)
         count_after_first = self._count_real_invocations()
@@ -784,7 +784,7 @@ class CliExitCodeTests(unittest.TestCase):
             code = cli.main(["batch", str(cell_dir), "--pdk-root", "/definitely/not/a/pdk"])
         self.assertEqual(code, exitcodes.ENVIRONMENT_INCOMPLETE)
 
-    def test_manifest_validate_missing_file_is_reported_not_crashed(self):
+    def test_manifest_validate_reports_missing_file(self):
         code = cli.main(["manifest", "validate", "/definitely/not/a/file.json"])
         self.assertEqual(code, exitcodes.NOT_CLEAN)
 
