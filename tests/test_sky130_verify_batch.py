@@ -25,11 +25,9 @@ def _git(*args: str, cwd: Path) -> None:
 
 
 class UniqueLabelsTests(unittest.TestCase):
-    def test_distinct_names_are_unchanged(self):
+    def test_labels_preserve_unique_names_and_disambiguate_collisions(self):
         labels = _unique_labels((Path("cells/inv"), Path("cells/nand2")))
         self.assertEqual(labels, ["inv", "nand2"])
-
-    def test_colliding_basenames_are_disambiguated_not_silently_overwritten(self):
         labels = _unique_labels((Path("libA/inv"), Path("libB/inv")))
         self.assertEqual(len(set(labels)), 2)
 
@@ -93,15 +91,12 @@ fi
         kwargs.update(overrides)
         return run_batch(**kwargs)
 
-    def test_overall_exit_code_is_the_worst_of_the_individual_cells(self):
+    def test_batch_reports_cell_results_and_artifacts(self):
         outcome = self._run()
         self.assertEqual(outcome.exit_code, exitcodes.NOT_CLEAN)
         by_label = dict(outcome.results)
         self.assertEqual(by_label["inv"].exit_code, exitcodes.OK)
         self.assertEqual(by_label["nand2"].exit_code, exitcodes.NOT_CLEAN)
-
-    def test_each_cell_gets_its_own_output_subdirectory_and_manifest(self):
-        self._run()
         self.assertTrue((self.repo / "out" / "inv" / "manifest.json").is_file())
         self.assertTrue((self.repo / "out" / "nand2" / "manifest.json").is_file())
 

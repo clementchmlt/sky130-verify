@@ -115,7 +115,7 @@ class ManifestValidateTests(unittest.TestCase):
 
 
 class ManifestValidateCliJsonTests(unittest.TestCase):
-    def test_json_flag_reports_valid_manifest_structurally(self):
+    def test_json_manifest_validation_envelope(self):
         path = _write_manifest(_VALID_MANIFEST)
         out = _capture_stdout(lambda: cli.main(["manifest", "validate", str(path), "--json"]))
         data = json.loads(out)
@@ -123,8 +123,6 @@ class ManifestValidateCliJsonTests(unittest.TestCase):
         self.assertEqual(data["status"], "ok")
         self.assertTrue(data["valid"])
         self.assertEqual(data["errors"], [])
-
-    def test_json_flag_reports_invalid_manifest_with_errors_not_exit_crash(self):
         broken = _broken()
         del broken["pdk"]
         path = _write_manifest(broken)
@@ -132,8 +130,6 @@ class ManifestValidateCliJsonTests(unittest.TestCase):
         data = json.loads(out)
         self.assertFalse(data["valid"])
         self.assertTrue(data["errors"])
-
-    def test_json_argument_error_is_an_envelope_not_argparse_prose(self):
         out = _capture_stdout(lambda: cli.main(["check", "--json"]))
         data = json.loads(out)
         self.assertEqual(data["exit_code"], exitcodes.USAGE_ERROR)
@@ -151,53 +147,38 @@ def _capture_stdout(fn) -> str:
 
 
 class BadgeRenderCliTests(unittest.TestCase):
-    def test_badge_render_writes_the_three_artifacts_next_to_the_manifest(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = Path(tmp) / "manifest.json"
-            manifest_path.write_text(json.dumps(_VALID_MANIFEST))
-            code = cli.main(["badge", "render", str(manifest_path)])
-            self.assertEqual(code, exitcodes.OK)
-            self.assertTrue((Path(tmp) / "badge.svg").is_file())
-            self.assertTrue((Path(tmp) / "badge.json").is_file())
-            self.assertTrue((Path(tmp) / "snippet.md").is_file())
-
-    def test_badge_json_embeds_the_manifest_sha256(self):
+    def test_badge_render_writes_and_describes_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             manifest_path = Path(tmp) / "manifest.json"
             manifest_bytes = json.dumps(_VALID_MANIFEST).encode("utf-8")
             manifest_path.write_bytes(manifest_bytes)
             code = cli.main(["badge", "render", str(manifest_path)])
             self.assertEqual(code, exitcodes.OK)
+            self.assertTrue((Path(tmp) / "badge.svg").is_file())
+            self.assertTrue((Path(tmp) / "badge.json").is_file())
+            self.assertTrue((Path(tmp) / "snippet.md").is_file())
             import hashlib
             badge_data = json.loads((Path(tmp) / "badge.json").read_text())
             self.assertEqual(badge_data["manifest_sha256"], hashlib.sha256(manifest_bytes).hexdigest())
-
-    def test_badge_json_uses_the_common_cli_envelope(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = Path(tmp) / "manifest.json"
-            manifest_path.write_text(json.dumps(_VALID_MANIFEST))
             out = _capture_stdout(lambda: cli.main(["badge", "render", str(manifest_path), "--json"]))
             data = json.loads(out)
             self.assertEqual(data["exit_code"], exitcodes.OK)
             self.assertEqual(data["status"], "ok")
             self.assertEqual(set(data["files"]), {"badge.svg", "badge.json", "snippet.md"})
 
-    def test_invalid_manifest_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = Path(tmp) / "manifest.json"
-            manifest_path.write_text(json.dumps(_broken(cell_id="")))
-            code = cli.main(["badge", "render", str(manifest_path)])
-            self.assertEqual(code, exitcodes.NOT_CLEAN)
-            self.assertFalse((Path(tmp) / "badge.svg").is_file())
-
-    def test_manifest_missing_required_fields_is_refused(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            manifest_path = Path(tmp) / "manifest.json"
-            manifest_path.write_text(json.dumps({"verification": {"drc_verdict": "pass",
-                                                                    "lvs_verdict": "pass"}}))
-            code = cli.main(["badge", "render", str(manifest_path)])
-            self.assertEqual(code, exitcodes.NOT_CLEAN)
-            self.assertFalse((Path(tmp) / "badge.svg").is_file())
+    def test_badge_render_refuses_invalid_manifests(self):
+        cases = (
+            _broken(cell_id=""),
+            {"verification": {"drc_verdict": "pass", "lvs_verdict": "pass"}},
+        )
+        for manifest in cases:
+            with self.subTest(manifest=manifest):
+                with tempfile.TemporaryDirectory() as tmp:
+                    manifest_path = Path(tmp) / "manifest.json"
+                    manifest_path.write_text(json.dumps(manifest))
+                    code = cli.main(["badge", "render", str(manifest_path)])
+                    self.assertEqual(code, exitcodes.NOT_CLEAN)
+                    self.assertFalse((Path(tmp) / "badge.svg").is_file())
 
 
 if __name__ == "__main__":

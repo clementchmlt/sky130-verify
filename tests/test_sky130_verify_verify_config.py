@@ -16,14 +16,12 @@ from sky130_verify.verify_config import (  # noqa: E402
 
 
 class FindVerifyConfigTests(unittest.TestCase):
-    def test_absent_returns_none(self):
+    def test_config_path_is_found_only_when_present(self):
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertIsNone(find_verify_config(Path(tmp)))
-
-    def test_present_is_found(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "verify.toml").write_text("")
-            self.assertEqual(find_verify_config(Path(tmp)), Path(tmp) / "verify.toml")
+            root = Path(tmp)
+            self.assertIsNone(find_verify_config(root))
+            (root / "verify.toml").write_text("")
+            self.assertEqual(find_verify_config(root), root / "verify.toml")
 
 
 class LoadVerifyConfigTests(unittest.TestCase):
@@ -45,21 +43,15 @@ class LoadVerifyConfigTests(unittest.TestCase):
             self.assertEqual(config.cell, "foo")
             self.assertEqual(config.pdk_variant, "sky130A")
 
-    def test_missing_referenced_file_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config_path = root / "verify.toml"
-            config_path.write_text('[cell]\nlayout = "nope.mag"\n')
-            with self.assertRaises(VerifyConfigError):
-                load_verify_config(config_path, base_dir=root)
-
-    def test_invalid_toml_syntax_is_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            config_path = root / "verify.toml"
-            config_path.write_text("this is not [valid toml")
-            with self.assertRaises(VerifyConfigError):
-                load_verify_config(config_path, base_dir=root)
+    def test_missing_files_and_invalid_toml_are_rejected(self):
+        for content in ('[cell]\nlayout = "nope.mag"\n', "this is not [valid toml"):
+            with self.subTest(content=content):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    config_path = root / "verify.toml"
+                    config_path.write_text(content)
+                    with self.assertRaises(VerifyConfigError):
+                        load_verify_config(config_path, base_dir=root)
 
     def test_unknown_configuration_fields_are_rejected(self):
         cases = ("[bogus]\nx = 1\n", '[cell]\nbogus_key = "x"\n')

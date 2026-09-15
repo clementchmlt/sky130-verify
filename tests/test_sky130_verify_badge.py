@@ -35,14 +35,12 @@ class EndpointJsonTests(unittest.TestCase):
 
 
 class RenderSvgTests(unittest.TestCase):
-    def test_svg_is_well_formed_and_contains_label_and_message(self):
+    def test_svg_contains_escaped_label_and_message(self):
         svg = badge.render_svg("sky130-verify", "drc pass · lvs pass", "#4c1")
         self.assertTrue(svg.startswith("<svg"))
         self.assertIn("sky130-verify", svg)
         self.assertIn("drc pass", svg)
         self.assertIn("#4c1", svg)
-
-    def test_svg_escapes_markup_in_message(self):
         svg = badge.render_svg("label", "a < b & c", "#000")
         self.assertNotIn("a < b", svg)
         self.assertIn("&lt;", svg)

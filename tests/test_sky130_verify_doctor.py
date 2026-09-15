@@ -20,13 +20,11 @@ def _write_executable(path: Path, script: str) -> None:
 
 
 class ProbeToolTests(unittest.TestCase):
-    def test_missing_tool_is_reported_not_found(self):
+    def test_tool_probe_reports_required_and_optional_tools(self):
         status = doctor.probe_tool("a-tool-that-does-not-exist-anywhere")
         self.assertFalse(status.found)
         self.assertIsNone(status.version)
         self.assertIsNone(status.path)
-
-    def test_present_tool_reports_its_first_output_line_as_version(self):
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp)
             _write_executable(bindir / "magic", "#!/bin/sh\necho 'Magic 8.3.500'\n")
@@ -39,8 +37,6 @@ class ProbeToolTests(unittest.TestCase):
             self.assertTrue(status.found)
             self.assertEqual(status.version, "Magic 8.3.500")
             self.assertTrue(status.required)
-
-    def test_klayout_is_optional_even_when_absent(self):
         status = doctor.probe_tool("klayout")
         self.assertFalse(status.required)
 
@@ -53,17 +49,15 @@ class ResolvePdkTests(unittest.TestCase):
         if self._old_pdk_root is not None:
             os.environ["PDK_ROOT"] = self._old_pdk_root
 
-    def test_no_pdk_root_is_reported_unresolved_with_an_explanatory_note(self):
+    def test_missing_pdk_root_or_layout_is_unresolved(self):
         status = doctor.resolve_pdk(None, "sky130A")
         self.assertFalse(status.found)
         self.assertIn("PDK_ROOT", status.note)
-
-    def test_pdk_root_missing_open_pdks_layout_is_unresolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             status = doctor.resolve_pdk(tmp, "sky130A")
             self.assertFalse(status.found)
 
-    def test_pdk_root_with_standard_open_pdks_layout_is_resolved(self):
+    def test_standard_pdk_layout_resolves_explicit_or_unknown_commit(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             magic_dir = root / "sky130A" / "libs.tech" / "magic"
@@ -77,17 +71,6 @@ class ResolvePdkTests(unittest.TestCase):
             self.assertTrue(status.found)
             self.assertEqual(status.commit_sha, "a" * 40)
             self.assertTrue(status.magicrc.endswith("sky130A.magicrc"))
-
-    def test_unresolved_commit_is_none(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            magic_dir = root / "sky130A" / "libs.tech" / "magic"
-            netgen_dir = root / "sky130A" / "libs.tech" / "netgen"
-            magic_dir.mkdir(parents=True)
-            netgen_dir.mkdir(parents=True)
-            (magic_dir / "sky130A.magicrc").touch()
-            (netgen_dir / "sky130A_setup.tcl").touch()
-
             status = doctor.resolve_pdk(str(root), "sky130A")
             self.assertTrue(status.found)
             self.assertIsNone(status.commit_sha)
@@ -172,14 +155,12 @@ class ResolveKlayoutTechTests(unittest.TestCase):
         if self._old is not None:
             os.environ["KLAYOUT_TECH_PATH"] = self._old
 
-    def test_absent_klayout_tech_is_unresolved(self):
+    def test_klayout_tech_resolution(self):
         status = doctor.resolve_klayout_tech(None)
         self.assertFalse(status.found)
         report = doctor.run_doctor(None, "sky130A")
         self.assertFalse(report.ok)  # magic/netgen absent here, the real cause
         self.assertIsNotNone(report.klayout_tech)
-
-    def test_deck_present_is_resolved(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "drc").mkdir()
@@ -187,12 +168,6 @@ class ResolveKlayoutTechTests(unittest.TestCase):
             status = doctor.resolve_klayout_tech(str(root))
             self.assertTrue(status.found)
             self.assertTrue(status.deck_path.endswith("sky130A_mr.drc"))
-
-    def test_environment_variable_is_used_when_flag_absent(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            (root / "drc").mkdir()
-            (root / "drc" / "sky130A_mr.drc").touch()
             os.environ["KLAYOUT_TECH_PATH"] = str(root)
             try:
                 status = doctor.resolve_klayout_tech(None)

@@ -178,7 +178,7 @@ echo "device/pin correspondence" > "$6"
         manifest = json.loads((out_dir / "manifest.json").read_text())
         self.assertTrue(any(key.endswith("logs/lvs.out") for key in manifest["artifacts"]))
 
-    def test_dry_run_touches_nothing_on_disk(self):
+    def test_dry_run_reports_plan_without_writing_or_running_tools(self):
         out_dir = self.repo / "out-dry"
         outcome = run_check(
             target=self.cell_dir, out_dir=out_dir, pdk_root=str(self.pdk_root),
@@ -188,8 +188,6 @@ echo "device/pin correspondence" > "$6"
         )
         self.assertEqual(outcome.exit_code, exitcodes.OK)
         self.assertFalse(out_dir.exists())
-
-    def test_dry_run_shows_the_plan_even_without_magic_or_netgen_on_path(self):
         os.environ["PATH"] = self.old_path  # remove the fake magic/netgen
         out_dir = self.repo / "out-dry-no-tools"
         outcome = run_check(
@@ -203,8 +201,6 @@ echo "device/pin correspondence" > "$6"
         self.assertFalse(out_dir.exists())
         self.assertIn("magic", outcome.message)
         self.assertTrue(any("not resolved" in w and "magic" in w for w in outcome.warnings))
-
-    def test_dry_run_without_pdk_resolved_is_still_environment_incomplete(self):
         outcome = run_check(
             target=self.cell_dir, out_dir=self.repo / "out-dry-no-pdk",
             pdk_root=str(self.root / "no-such-pdk"), pdk_variant="sky130A",
@@ -658,7 +654,7 @@ echo "Circuits match uniquely."
         return sum(1 for line in text.splitlines() if "drc.tcl" in line or "extract.tcl" in line
                    or "lvs" in line)
 
-    def test_second_identical_run_reuses_drc_extraction_and_lvs(self):
+    def test_cache_reuse_and_no_cache_override(self):
         first = self._run()
         self.assertEqual(first.exit_code, exitcodes.OK)
         count_after_first = self._count_real_invocations()
@@ -671,38 +667,25 @@ echo "Circuits match uniquely."
 
         run_log = json.loads((self.repo / "out" / "run.json").read_text())
         self.assertTrue(all(step["cached"] for step in run_log["steps"]))
-
-    def test_changed_layout_invalidates_the_cache(self):
-        self._run()
-        count_after_first = self._count_real_invocations()
-
-        (self.cell_dir / "foo.mag").write_text("v2 — modified content\n")
-        second = self._run()
-        self.assertEqual(second.exit_code, exitcodes.OK)
-        self.assertGreater(self._count_real_invocations(), count_after_first,
-                            "modified input content should re-run DRC/extraction/LVS")
-
-    def test_changed_pdk_deck_invalidates_the_cache(self):
-        self._run()
-        count_after_first = self._count_real_invocations()
-
-        (self.pdk_root / "sky130A" / "libs.tech" / "magic" / "sky130A.magicrc").write_text(
-            "# modified deck\n"
-        )
-        second = self._run()
-        self.assertEqual(second.exit_code, exitcodes.OK)
-        self.assertGreater(self._count_real_invocations(), count_after_first,
-                            "a modified magicrc should re-run DRC/extraction (LVS stays "
-                            "indirectly invalidated via extraction)")
-
-    def test_no_cache_flag_forces_full_reexecution(self):
-        self._run()
-        count_after_first = self._count_real_invocations()
         second = self._run(use_cache=False)
         self.assertEqual(second.exit_code, exitcodes.OK)
         self.assertGreater(self._count_real_invocations(), count_after_first)
         run_log = json.loads((self.repo / "out" / "run.json").read_text())
         self.assertFalse(any(step["cached"] for step in run_log["steps"]))
+
+    def test_changed_input_or_deck_invalidates_cache(self):
+        self._run()
+        count = self._count_real_invocations()
+        changes = (
+            (self.cell_dir / "foo.mag", "v2 — modified content\n"),
+            (self.pdk_root / "sky130A" / "libs.tech" / "magic" / "sky130A.magicrc", "# modified deck\n"),
+        )
+        for path, content in changes:
+            with self.subTest(path=path.name):
+                path.write_text(content)
+                self.assertEqual(self._run().exit_code, exitcodes.OK)
+                self.assertGreater(self._count_real_invocations(), count)
+                count = self._count_real_invocations()
 
     def test_interrupted_marker_requires_explicit_resume_then_reuses_safe_cache(self):
         first = self._run()
@@ -754,11 +737,9 @@ class DirtyWorkingTreeWarningTests(unittest.TestCase):
 
 
 class CliExitCodeTests(unittest.TestCase):
-    def test_doctor_returns_environment_incomplete_when_no_pdk_and_no_tools(self):
+    def test_doctor_reports_environment_incomplete_in_text_and_json(self):
         code = cli.main(["doctor", "--pdk-root", "/definitely/not/a/pdk"])
         self.assertEqual(code, exitcodes.ENVIRONMENT_INCOMPLETE)
-
-    def test_doctor_json_uses_the_common_envelope_when_environment_is_incomplete(self):
         import contextlib
         import io
 
@@ -787,11 +768,9 @@ class CliExitCodeTests(unittest.TestCase):
             code = cli.main(["batch", str(cell_dir), "--pdk-root", "/definitely/not/a/pdk"])
         self.assertEqual(code, exitcodes.ENVIRONMENT_INCOMPLETE)
 
-    def test_manifest_validate_reports_missing_file(self):
+    def test_invalid_cli_paths_return_documented_exit_codes(self):
         code = cli.main(["manifest", "validate", "/definitely/not/a/file.json"])
         self.assertEqual(code, exitcodes.NOT_CLEAN)
-
-    def test_check_on_nonexistent_path_is_a_usage_error(self):
         code = cli.main(["check", "/definitely/not/a/cell/path"])
         self.assertEqual(code, exitcodes.USAGE_ERROR)
 

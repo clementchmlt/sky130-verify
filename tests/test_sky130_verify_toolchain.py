@@ -34,11 +34,9 @@ class ParseLvsLogTests(unittest.TestCase):
 
 
 class AslrGuardCommandTests(unittest.TestCase):
-    def test_disabled_aslr_guard_leaves_command_unchanged(self):
+    def test_aslr_guard_command_uses_setarch_only_when_available(self):
         argv = toolchain.aslr_guard_command(["magic", "-x"], disabled=True)
         self.assertEqual(argv, ["magic", "-x"])
-
-    def test_absent_setarch_leaves_command_untouched(self):
         old_path = os.environ.get("PATH", "")
         os.environ["PATH"] = ""
         try:
@@ -46,8 +44,6 @@ class AslrGuardCommandTests(unittest.TestCase):
         finally:
             os.environ["PATH"] = old_path
         self.assertEqual(argv, ["magic", "-x"])
-
-    def test_present_setarch_prefixes_with_architecture_and_dash_r(self):
         with tempfile.TemporaryDirectory() as tmp:
             bindir = Path(tmp)
             _write_executable(bindir / "setarch", "#!/bin/sh\nexit 0\n")
