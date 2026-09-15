@@ -118,7 +118,7 @@ a Sky130A PDK.
 ## Limits
 
 Automatic macro sub-block detection is unavailable. CPU and memory telemetry
-is available on Linux.
+is available only on Linux.
 
 ## Security
 
@@ -126,7 +126,7 @@ is available on Linux.
 the resolved PDK `magicrc`. Magic and Netgen receive `PATH`, `HOME`,
 `PDK_ROOT`, and `PDK`.
 
-Report vulnerabilities through GitHub private security advisories.
+Please report vulnerabilities through GitHub private security advisories.
 
 ## License
 
