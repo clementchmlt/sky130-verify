@@ -1,0 +1,10 @@
+* REFERENCE schematic netlist for the af1_nfet unit.
+*
+* Describes the topology the af1_nfet layout is supposed to realize: a
+* single primitive sky130_fd_pr__nfet_01v8 device, four distinct nets
+* (source, gate, drain, bulk).
+*
+* Expected verdict: "clean" (the circuits match).
+.subckt af1_nfet
+X0 S G D B sky130_fd_pr__nfet_01v8 w=0.42 l=0.15
+.ends

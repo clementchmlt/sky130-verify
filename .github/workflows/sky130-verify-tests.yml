@@ -1,0 +1,27 @@
+name: sky130-verify tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install sky130-verify (editable)
+        run: pip install -e .
+      - name: Build and install the wheel outside the checkout
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip wheel --no-deps --no-build-isolation --wheel-dir /tmp/sky130-verify-dist .
+          python -m venv /tmp/sky130-verify-wheel-venv
+          /tmp/sky130-verify-wheel-venv/bin/pip install /tmp/sky130-verify-dist/*.whl
+          /tmp/sky130-verify-wheel-venv/bin/sky130-verify --help
+          /tmp/sky130-verify-wheel-venv/bin/sky130-verify manifest validate --help
+      - name: Run the test suite
+        run: |
+          python -m unittest \
+            discover -s tests -p "test_sky130_verify_*.py" -v
+          python -m unittest tests.test_verification_manifest -v

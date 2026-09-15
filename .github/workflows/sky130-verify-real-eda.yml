@@ -1,0 +1,94 @@
+name: sky130-verify real EDA check
+
+# Run Magic and Netgen against a Sky130A PDK installed by volare.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  PDK_COMMIT: d7c3a52fba997de2bfc15c375a052215528216ac
+
+jobs:
+  real-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the sky130-verify image (real Magic/Netgen)
+        run: docker build -t sky130-verify .
+
+      - name: Fetch a real Sky130A PDK (volare)
+        run: |
+          pip install --quiet volare
+          python3 -m volare fetch --pdk sky130 "$PDK_COMMIT"
+          python3 -m volare enable --pdk sky130 "$PDK_COMMIT"
+          echo "PDK_ROOT=$(python3 -m volare path --pdk sky130)" >> "$GITHUB_ENV"
+
+      - name: Generate a real cell with the PDK's device generator
+        run: |
+          mkdir -p fixture/cell_clean fixture/cell_broken
+          cat > fixture/gen_fixture.tcl <<'EOF'
+          drc off
+          crashbackups stop
+          load fixture_src -silent
+          box values 0 0 0 0
+          magic::gencell sky130::sky130_fd_pr__nfet_01v8 nmos1 \
+              -nf 1 -l 0.15 -diffcov 100 -polycov 100 -topc 1 -botc 1 -viasrc 1 -viadrn 1
+          select top cell
+          flatten af1_nfet
+          load af1_nfet -silent
+          save
+          puts "FIXTURE_OK"
+          quit -noprompt
+          EOF
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -e PDK_ROOT=/pdk -e PDK=sky130A \
+            -v "$PDK_ROOT:/pdk:ro" -v "$PWD/fixture:/work" -w /work \
+            --entrypoint magic sky130-verify \
+            -dnull -noconsole -rcfile /pdk/sky130A/libs.tech/magic/sky130A.magicrc gen_fixture.tcl
+          test -s fixture/af1_nfet.mag
+          cp fixture/af1_nfet.mag fixture/cell_clean/af1_nfet.mag
+          cp fixture/af1_nfet.mag fixture/cell_broken/af1_nfet.mag
+          cp replay/schematic_clean.spice fixture/cell_clean/af1_nfet.spice
+          cp replay/schematic_broken.spice fixture/cell_broken/af1_nfet.spice
+          git -C fixture init -q
+          git -C fixture config user.email ci@example.com
+          git -C fixture config user.name "sky130-verify CI"
+          git -C fixture add -A
+          git -C fixture commit -q -m fixture
+          echo "FIXTURE_COMMIT=$(git -C fixture rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: check — clean netlist (LVS pass expected)
+        run: |
+          docker run --rm --network=none --user "$(id -u):$(id -g)" \
+            -e PDK_ROOT=/pdk -v "$PDK_ROOT:/pdk:ro" \
+            -v "$PWD/fixture:/repo" -w /repo \
+            --entrypoint sky130-verify sky130-verify \
+            check cell_clean --pdk-variant sky130A --pdk-commit "$PDK_COMMIT" \
+              --source-repository "https://github.com/${{ github.repository }}.git" \
+              --source-commit "$FIXTURE_COMMIT" \
+              --out out_clean --json | tee clean.json
+          test "$(python3 -c 'import json;print(json.load(open("clean.json"))["manifest"]["verification"]["lvs_verdict"])')" = pass
+
+      - name: check — broken netlist (LVS fail expected)
+        run: |
+          docker run --rm --network=none --user "$(id -u):$(id -g)" \
+            -e PDK_ROOT=/pdk -v "$PDK_ROOT:/pdk:ro" \
+            -v "$PWD/fixture:/repo" -w /repo \
+            --entrypoint sky130-verify sky130-verify \
+            check cell_broken --pdk-variant sky130A --pdk-commit "$PDK_COMMIT" \
+              --source-repository "https://github.com/${{ github.repository }}.git" \
+              --source-commit "$FIXTURE_COMMIT" \
+              --out out_broken --json | tee broken.json
+          test "$(python3 -c 'import json;print(json.load(open("broken.json"))["manifest"]["verification"]["lvs_verdict"])')" = fail
+
+      - name: Upload manifests and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sky130-verify-real-eda-proof
+          path: |
+            fixture/out_clean/
+            fixture/out_broken/

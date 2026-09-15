@@ -1,0 +1,11 @@
+# AppleDouble resource forks (macOS on a non-HFS+ volume): their extended
+# attributes make the Docker build context upload fail ("failed to xattr").
+._*
+.DS_Store
+
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.git/

@@ -1,0 +1,23 @@
+* BROKEN schematic netlist for the af1_nfet unit.
+*
+* Identical to schematic_conforme.spice, except for one thing: the circuit
+* carries TWO devices IN SERIES instead of one, via an intermediate net M.
+* The perturbation is structural — 2 devices and 5 nets versus 1 and 4 — so
+* it's detectable by any functioning netlist-comparison pipeline, regardless
+* of property-tolerance settings (w, l, ad, as...).
+*
+* Putting them in SERIES is deliberate: two devices in parallel on the same
+* nets would be merged by netgen before comparison, and the perturbation
+* would only affect properties. The intermediate net makes that merge
+* impossible.
+*
+* Expected verdict: "not clean" (the circuits do not match).
+*
+* Role: non-vacuity. A "clean" verdict on the conformant netlist alone
+* wouldn't prove the pipeline compares anything at all — a pipeline that
+* always answers "clean" would produce that too. The fixture is only
+* trusted if the two verdicts differ in the expected direction.
+.subckt af1_nfet
+X0 S G M B sky130_fd_pr__nfet_01v8 w=0.42 l=0.15
+X1 M G D B sky130_fd_pr__nfet_01v8 w=0.42 l=0.15
+.ends

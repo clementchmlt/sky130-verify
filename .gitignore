@@ -1,0 +1,14 @@
+# Python build/install artifacts.
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+/build/
+/dist/
+
+# Default output of `sky130-verify check` when --out isn't given.
+/sky130-verify-out/
+
+# AppleDouble resource forks created by macOS on a non-HFS+ volume.
+._*
+.DS_Store
