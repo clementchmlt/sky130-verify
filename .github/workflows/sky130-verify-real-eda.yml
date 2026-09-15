@@ -23,6 +23,8 @@ jobs:
         run: docker build -t sky130-verify .
 
       - name: Fetch a real Sky130A PDK (volare)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           pip install --quiet volare
           python3 -m volare fetch --pdk sky130 "$PDK_COMMIT"
