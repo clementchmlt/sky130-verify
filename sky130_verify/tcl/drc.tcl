@@ -1,8 +1,14 @@
-# sky130-verify — geometric DRC of a single cell.
+# sky130-verify: Magic DRC of a single cell.
 #
-# Input (env): SKY130VERIFY_VIEW, SKY130VERIFY_FORMAT (mag|gds),
-# SKY130VERIFY_CELL. Output: DRC_LOAD_OK|FAIL then DRC_RUN_OK|FAIL; error
-# count is parsed by the caller from "Total DRC errors found: N".
+# Input (environment variables):
+#   SKY130VERIFY_VIEW    layout view path (for .mag, already copied under the
+#                        cell name; see toolchain.run_extraction)
+#   SKY130VERIFY_FORMAT  mag | gds
+#   SKY130VERIFY_CELL    name of the cell to load
+#
+# Output on stdout: DRC_LOAD_OK|DRC_LOAD_FAIL, then DRC_RUN_OK|DRC_RUN_FAIL.
+# `drc count total` prints "Total DRC errors found: N"; the Python caller
+# parses that line, because the Tcl return value is not reliable.
 
 set view   $env(SKY130VERIFY_VIEW)
 set format $env(SKY130VERIFY_FORMAT)

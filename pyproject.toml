@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,10 +8,11 @@ dynamic = ["version"]
 description = "Headless DRC/LVS verification of a single Sky130A cell, with a provenance manifest and badge."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = ["sky130", "drc", "lvs", "magic", "netgen", "eda"]
 classifiers = [
     "Environment :: Console",
-    "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.10",
@@ -28,12 +29,14 @@ dependencies = [
 [project.urls]
 Repository = "https://github.com/clementchmlt/sky130-verify"
 Issues = "https://github.com/clementchmlt/sky130-verify/issues"
+Changelog = "https://github.com/clementchmlt/sky130-verify/blob/main/CHANGELOG.md"
 
 [project.scripts]
 sky130-verify = "sky130_verify.cli:main"
 
-[tool.setuptools]
-packages = ["sky130_verify"]
+[tool.setuptools.packages.find]
+include = ["sky130_verify"]
+namespaces = false
 
 [tool.setuptools.dynamic]
 version = {attr = "sky130_verify.__version__"}

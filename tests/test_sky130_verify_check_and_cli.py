@@ -127,7 +127,6 @@ esac
         self.assertIn("netgen_setup_sha256", manifest["toolchain"]["pdk_files"])
         self.assertIn("drc_tcl_sha256", manifest["toolchain"]["scripts"])
         self.assertIn("extract_tcl_sha256", manifest["toolchain"]["scripts"])
-        self.assertIn("gdswrite_tcl_sha256", manifest["toolchain"]["scripts"])
         self.assertIn("sha256", manifest["toolchain"]["executables"]["magic"])
         self.assertIn("sha256", manifest["toolchain"]["executables"]["netgen"])
         self.assertIn("out/run.json", manifest["artifacts"])
@@ -200,7 +199,8 @@ echo "device/pin correspondence" > "$6"
         self.assertEqual(outcome.status, "dry_run")
         self.assertFalse(out_dir.exists())
         self.assertIn("magic", outcome.message)
-        self.assertTrue(any("not resolved" in w and "magic" in w for w in outcome.warnings))
+        self.assertTrue(any("not installed on this machine" in w and "magic" in w
+                            for w in outcome.warnings))
         outcome = run_check(
             target=self.cell_dir, out_dir=self.repo / "out-dry-no-pdk",
             pdk_root=str(self.root / "no-such-pdk"), pdk_variant="sky130A",
@@ -426,6 +426,11 @@ done
         cross_check = outcome.manifest["toolchain"]["klayout_cross_check"]
         self.assertEqual(cross_check["drc_verdict"], "pass")
         self.assertEqual(cross_check["violation_count"], 0)
+        self.assertEqual(
+            outcome.manifest["toolchain"]["scripts"]["gdswrite_tcl_sha256"],
+            hashlib.sha256((Path(__file__).resolve().parents[1] / "sky130_verify" / "tcl" /
+                            "gdswrite.tcl").read_bytes()).hexdigest(),
+        )
 
     def test_missing_klayout_tech_is_environment_incomplete(self):
         outcome = self._run(klayout_tech=str(self.root / "does-not-exist"))
@@ -770,7 +775,7 @@ class CliExitCodeTests(unittest.TestCase):
 
     def test_invalid_cli_paths_return_documented_exit_codes(self):
         code = cli.main(["manifest", "validate", "/definitely/not/a/file.json"])
-        self.assertEqual(code, exitcodes.NOT_CLEAN)
+        self.assertEqual(code, exitcodes.USAGE_ERROR)
         code = cli.main(["check", "/definitely/not/a/cell/path"])
         self.assertEqual(code, exitcodes.USAGE_ERROR)
 

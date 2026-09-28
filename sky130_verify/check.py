@@ -1,7 +1,9 @@
-"""Orchestrator for ``sky130-verify check`` — one cell, one manifest.
+"""``sky130-verify check``: one cell, one manifest.
 
-Chain: resolve environment -> DRC -> extraction -> LVS -> manifest -> badge.
-Argument validation happens fail-fast, before any Magic/Netgen invocation.
+Pipeline: resolve the environment, DRC, extraction, LVS, eight-field
+manifest, badge. A missing required tool stops the pipeline with exit code 3.
+Arguments are validated before any Magic or Netgen invocation, so a malformed
+``--pdk-commit`` is rejected before a full DRC and LVS run.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from . import badge, doctor, exitcodes, gitinfo, toolchain
-from .verification_manifest import ManifestValidationError, Pdk, Source, Verification, VerificationManifest
+from .manifest_backend import ManifestValidationError, Pdk, Source, Verification, VerificationManifest
 from .verify_config import VerifyConfig, VerifyConfigError, find_verify_config, load_verify_config
 
 _LAYOUT_SUFFIXES = (".mag", ".gds")
@@ -28,8 +30,12 @@ _SCP_LIKE_GIT_URL_RE = re.compile(r"^(?P<user>[^@\s/]+)@(?P<host>[^:\s/]+):(?P<p
 
 
 def normalize_repository_url(value: str) -> str:
-    """Converts an SCP-like Git URL (``git@host:path``) to ``ssh://``.
-    Leaves anything else, including already-standard URLs, unchanged."""
+    """Convert an SCP-like git URL (``git@host:path``) to an ``ssh://`` URI.
+
+    The manifest requires a URL with a scheme; SSH remotes such as
+    ``git@github.com:org/repo.git`` are common. Any other value is returned
+    unchanged.
+    """
     if "://" in value:
         return value
     m = _SCP_LIKE_GIT_URL_RE.match(value)
@@ -39,29 +45,27 @@ def normalize_repository_url(value: str) -> str:
 
 
 class UsageError(Exception):
-    """Invocation error — exit code 2."""
+    """Invocation error: exit code 2."""
 
 
 def validate_git_sha(value: str | None, field_name: str) -> None:
     if value is not None and not _GIT_SHA_RE.fullmatch(value):
         raise UsageError(
-            f"{field_name} must be a 40-64 character hex git SHA, "
-            f"got {value!r} — a truncated or partially pasted SHA is the "
-            "most common cause"
+            f"{field_name} must be a full git SHA (40 to 64 hexadecimal characters), "
+            f"got {value!r}"
         )
 
 
 def validate_repository_url(value: str | None, field_name: str) -> None:
     if value is not None and "://" not in value:
-        raise UsageError(f"{field_name} must be a repository URL (containing '://'), got {value!r}")
+        raise UsageError(f"{field_name} must be a repository URL containing '://', got {value!r}")
 
 
 def validate_cell_name(value: str, field_name: str) -> None:
     if not _CELL_NAME_RE.fullmatch(value):
         raise UsageError(
-            f"{field_name} must be a safe identifier (letters/digits/_/./- , starting "
-            f"with a letter or underscore): {value!r} isn't usable as-is in "
-            "a Magic/Netgen invocation (spaces or quotes would break the call)"
+            f"{field_name} must start with a letter or underscore and contain only letters, "
+            f"digits, '_', '.' or '-'; {value!r} cannot be passed safely to Magic or Netgen"
         )
 
 
@@ -76,12 +80,15 @@ class CellInputs:
 def _pick_single(directory: Path, suffixes: tuple[str, ...], role: str) -> Path:
     candidates = sorted(p for p in directory.iterdir() if p.suffix.lower() in suffixes and p.is_file())
     if not candidates:
-        raise UsageError(f"no {role} file ({'/'.join(suffixes)}) found under {directory}")
+        raise UsageError(
+            f"no {role} file ({'/'.join(suffixes)}) found in {directory}; "
+            "add the file or select it in verify.toml"
+        )
     if len(candidates) > 1:
         names = ", ".join(c.name for c in candidates)
         raise UsageError(
-            f"multiple candidate {role} files under {directory} ({names}) — "
-            "supply an explicit path instead of an ambiguous directory"
+            f"several {role} files in {directory} ({names}); "
+            "name the file explicitly or add a verify.toml"
         )
     return candidates[0]
 
@@ -91,22 +98,24 @@ def resolve_cell_inputs(target: Path, *, cell_override: str | None,
                          layout_override: Path | None = None) -> CellInputs:
     if target.is_dir():
         layout = layout_override or _pick_single(target, _LAYOUT_SUFFIXES, "layout")
-        schematic = schematic_override or _pick_single(target, _SCHEMATIC_SUFFIXES, "golden schematic")
+        schematic = schematic_override or _pick_single(target, _SCHEMATIC_SUFFIXES, "reference schematic")
     elif target.is_file():
         layout = target
         if schematic_override is None:
-            raise UsageError("a single layout file path requires an explicit --schematic")
+            raise UsageError("a layout file target requires --schematic")
         schematic = schematic_override
     else:
-        raise UsageError(f"cell path not found: {target}")
+        raise UsageError(f"cell path not found: {target}; pass an existing cell directory or layout file")
 
     cell_format = layout.suffix.lower().lstrip(".")
     if cell_format not in ("mag", "gds"):
-        raise UsageError(f"unsupported layout format: {layout.suffix}")
+        raise UsageError(f"unsupported layout format: {layout.suffix} (expected .mag or .gds)")
+    if not schematic.is_file():
+        raise UsageError(f"reference schematic not found: {schematic}; pass an existing --schematic file")
     cell = cell_override or layout.stem
-    validate_cell_name(cell, "the cell name (--cell, or derived from the layout file's name)")
-    # Resolved to absolute: run_lvs invokes netgen with cwd=work_dir, so a
-    # relative path here would resolve against the wrong directory.
+    validate_cell_name(cell, "the cell name (--cell, or the layout file name)")
+    # Absolute paths: Netgen runs with cwd=work_dir, where a relative
+    # schematic path would not resolve.
     return CellInputs(layout=layout.resolve(), cell_format=cell_format, cell=cell,
                        schematic=schematic.resolve())
 
@@ -115,12 +124,13 @@ def resolve_cell_inputs(target: Path, *, cell_override: str | None,
 class ResolvedSource:
     source: Source
     base: Path
-    repo_root: Path | None  # None if resolved only via explicit flags
+    repo_root: Path | None  # None when resolved from explicit options only
 
 
 def resolve_source(cell_dir: Path, *, explicit_repository: str | None,
                     explicit_commit: str | None) -> ResolvedSource:
-    """Resolve source metadata from Git or explicit flags."""
+    """Resolve the source repository and commit from git or from explicit
+    options; never guess them."""
     root = gitinfo.toplevel(cell_dir) or gitinfo.toplevel(cell_dir.parent)
     repository = explicit_repository
     commit = explicit_commit
@@ -131,9 +141,9 @@ def resolve_source(cell_dir: Path, *, explicit_repository: str | None,
         repository = normalize_repository_url(repository)
     if not repository or not commit:
         raise UsageError(
-            "cannot determine the source repository/commit automatically "
-            "(cell outside a git repository, or repository without an 'origin' remote) — "
-            "supply --source-repository and --source-commit explicitly"
+            "cannot determine the source repository and commit (cell outside a git "
+            "repository, or repository without an 'origin' remote); "
+            "pass --source-repository and --source-commit"
         )
     base = root or cell_dir
     try:
@@ -161,15 +171,20 @@ def relative_to_base(path: Path, base: Path) -> str:
         rel = path.resolve().relative_to(base.resolve())
     except ValueError as exc:
         raise UsageError(
-            f"{path} is outside {base}: sky130-verify requires --out to stay "
-            "under the repository root (or the current directory) to produce "
-            "valid relative paths in the manifest"
+            f"{path} is outside {base}: --out must be under the source repository "
+            "root (or under the cell directory outside git) so that manifest paths "
+            "are relative"
         ) from exc
     return rel.as_posix()
 
 
 def dirty_file_warning(repo_root: Path | None, commit: str, abs_path: Path) -> str | None:
-    """Return a warning when a file differs from the recorded commit."""
+    """Warning when ``abs_path`` differs from its content at ``commit``.
+
+    ``None`` when identical or not comparable (outside git, file added
+    later). Never blocking, so a designer can check uncommitted work, but the
+    difference is always reported.
+    """
     if repo_root is None:
         return None
     try:
@@ -180,18 +195,17 @@ def dirty_file_warning(repo_root: Path | None, commit: str, abs_path: Path) -> s
     if committed is None or committed == abs_path.read_bytes():
         return None
     return (
-        f"{rel} differs from the content committed at {commit[:12]} — the manifest will "
-        "reference that commit even though the content actually verified is the current "
-        "working tree's (the SHA-256 in `inputs`, not the commit, is authoritative for "
-        "the verified content)"
+        f"{rel} differs from its content at commit {commit[:12]}; the manifest cites "
+        "that commit, but the file checked is the working copy (its SHA-256 in "
+        "`inputs` identifies what was checked)"
     )
 
 
 def pdk_dirty_warning(pdk_root: Path) -> str | None:
     if gitinfo.is_repo_dirty(pdk_root):
         return (
-            f"the PDK under {pdk_root} has uncommitted changes — the recorded "
-            "commit_sha may not reflect the tree actually used"
+            f"the PDK under {pdk_root} has uncommitted changes; the recorded "
+            "commit_sha may not describe the tree actually used"
         )
     return None
 
@@ -206,7 +220,7 @@ class CheckOutcome:
     warnings: tuple[str, ...] = ()
 
     def to_json_dict(self) -> dict[str, Any]:
-        """Stable JSON contract: always these keys, on every exit path."""
+        """Stable JSON contract: the same keys on every exit path."""
         return {
             "exit_code": self.exit_code,
             "status": self.status,
@@ -246,9 +260,12 @@ def run_check(
     with_klayout: bool = False,
     klayout_tech: str | None = None,
 ) -> CheckOutcome:
-    """Run a check and convert expected failures to ``CheckOutcome``.
+    """Public entry point: always returns a ``CheckOutcome`` with an exit
+    code and a status, never a traceback.
 
-    ``cli.main`` handles ``KeyboardInterrupt``.
+    Usage errors, invalid provenance, tool time-outs and system errors
+    (permissions, full disk) each map to their own status.
+    ``KeyboardInterrupt`` is handled in ``cli.main``.
     """
     try:
         return _run_check(
@@ -263,20 +280,21 @@ def run_check(
         return CheckOutcome(exitcodes.USAGE_ERROR, _STATUS_USAGE_ERROR, str(exc))
     except ManifestValidationError as exc:
         return CheckOutcome(exitcodes.USAGE_ERROR, _STATUS_USAGE_ERROR,
-                             f"invalid provenance: {exc}")
+                             f"invalid provenance: {exc}; check source and PDK commit values")
     except subprocess.TimeoutExpired as exc:
         return CheckOutcome(exitcodes.TOOL_FAILURE, _STATUS_TIMEOUT,
-                             f"timed out running {' '.join(exc.cmd)}: {exc}")
+                             f"time-out while running {' '.join(exc.cmd)}: {exc}; check tool logs and system load")
     except OSError as exc:
-        return CheckOutcome(exitcodes.TOOL_FAILURE, _STATUS_TOOL_ERROR, f"system error: {exc}")
+        return CheckOutcome(exitcodes.TOOL_FAILURE, _STATUS_TOOL_ERROR,
+                             f"system error: {exc}; check file paths, permissions, and free space")
 
 
 _DEFAULT_PDK_VARIANT = "sky130A"
 
 
 def _load_verify_config(cell_dir: Path) -> VerifyConfig:
-    """``verify.toml`` under ``cell_dir``, or an empty config. Syntax
-    errors become a :class:`UsageError`."""
+    """``verify.toml`` from ``cell_dir`` if present, else an empty config.
+    An invalid file raises :class:`UsageError`."""
     config_path = find_verify_config(cell_dir)
     if config_path is None:
         return VerifyConfig()
@@ -305,8 +323,9 @@ def _run_check(
     with_klayout: bool = False,
     klayout_tech: str | None = None,
 ) -> CheckOutcome:
-    # verify.toml fills in what CLI flags don't specify; an explicit flag
-    # always wins.
+    # verify.toml fills what the command line leaves unset; explicit options
+    # win. It is loaded before validation so that its values are validated
+    # too.
     config_dir = target if target.is_dir() else target.parent
     config = _load_verify_config(config_dir)
     pdk_variant = pdk_variant or config.pdk_variant or _DEFAULT_PDK_VARIANT
@@ -316,11 +335,15 @@ def _run_check(
     source_repository = source_repository or config.source_repository
     source_commit = source_commit or config.source_commit
 
+    # Validate every argument before running any tool.
     validate_git_sha(pdk_commit, "--pdk-commit")
     validate_git_sha(source_commit, "--source-commit")
     if source_repository:
         source_repository = normalize_repository_url(source_repository)
     validate_repository_url(source_repository, "--source-repository")
+    # out_dir is made absolute before work_dir and cache_dir are derived
+    # from it: Netgen runs with cwd=work_dir and would not resolve a
+    # relative extracted-netlist path.
     inputs = resolve_cell_inputs(target, cell_override=cell_override,
                                   schematic_override=schematic_override,
                                   layout_override=config.layout)
@@ -329,7 +352,8 @@ def _run_check(
                                explicit_commit=source_commit)
     source, base = resolved.source, resolved.base
     out_dir = (out_dir or base / "sky130-verify-out" / inputs.cell).resolve()
-    relative_to_base(out_dir, base)  # validates containment before any tool runs
+    # Check that the output stays under the base before running any tool.
+    relative_to_base(out_dir, base)
     _guard_output_directory(out_dir, source=source, cell_id=inputs.cell,
                             resume=resume, force=force)
 
@@ -342,14 +366,17 @@ def _run_check(
     report = doctor.run_doctor(pdk_root, pdk_variant, pdk_commit)
 
     if dry_run and report.pdk.found:
-        # --dry-run requires a resolved PDK but does not invoke Magic or Netgen.
+        # --dry-run needs only the PDK paths (magicrc, Netgen setup), not the
+        # Magic and Netgen binaries, so the plan can be shown before the tools
+        # are installed. Without a resolved PDK, fall through to the
+        # incomplete-environment result below.
         dry_warnings = list(warnings)
         missing = [t.name for t in report.tools if t.required and not t.found]
         if missing:
             dry_warnings.append(
-                "tool(s) not resolved on this machine: " + ", ".join(missing)
-                + " — the plan below shows the commands that would run once "
-                "installed (`sky130-verify doctor` gives the remediation)"
+                "not installed on this machine: " + ", ".join(missing)
+                + "; the plan shows the commands that would run once installed "
+                "(see `sky130-verify doctor`)"
             )
         return CheckOutcome(
             exitcodes.OK, _STATUS_DRY_RUN,
@@ -361,7 +388,7 @@ def _run_check(
     if not report.ok:
         return CheckOutcome(
             exitcodes.ENVIRONMENT_INCOMPLETE, _STATUS_ENVIRONMENT_INCOMPLETE,
-            "incomplete environment — run `sky130-verify doctor` for details:\n"
+            "incomplete environment; install the missing requirements shown below:\n"
             + doctor.format_report_human(report),
             warnings=tuple(warnings),
         )
@@ -372,8 +399,8 @@ def _run_check(
     if w := pdk_dirty_warning(pdk_root_path):
         warnings.append(w)
 
-    # --with-klayout's environment is checked separately; doctor.DoctorReport.ok
-    # must not depend on it.
+    # KLayout is checked separately: it is optional and DoctorReport.ok does
+    # not depend on it.
     klayout_deck: Path | None = None
     if with_klayout:
         klayout_tool = doctor.probe_tool("klayout")
@@ -381,15 +408,19 @@ def _run_check(
         if not klayout_tool.found or not klayout_tech_status.found:
             detail = []
             if not klayout_tool.found:
-                detail.append("klayout not found on the PATH")
+                detail.append("klayout not found on PATH")
             if not klayout_tech_status.found:
                 detail.append(klayout_tech_status.note)
             return CheckOutcome(
                 exitcodes.ENVIRONMENT_INCOMPLETE, _STATUS_ENVIRONMENT_INCOMPLETE,
-                "--with-klayout requested but environment incomplete: " + " ; ".join(detail),
+                "--with-klayout cannot run: " + "; ".join(detail)
+                + "; install KLayout and set --klayout-tech, or rerun without --with-klayout",
                 warnings=tuple(warnings),
             )
         klayout_deck = Path(klayout_tech_status.deck_path)
+
+    # From here on report.ok holds and this is a real run (dry runs returned
+    # above).
 
     out_dir.mkdir(parents=True, exist_ok=True)
     work_dir = out_dir / "work"
@@ -398,12 +429,14 @@ def _run_check(
 
     magic_version = doctor.probe_tool("magic").version or "unknown"
     netgen_version = doctor.probe_tool("netgen").version or "unknown"
-    # A version banner doesn't identify the binary actually run, so hash
-    # the executables too and fold that hash into the cache keys.
+    # A version banner does not identify a binary: two local builds can print
+    # the same version. The manifest records each executable's SHA-256 (not
+    # its local path), and the cache keys include it.
     tool_paths = {status.name: status.path for status in report.tools if status.required}
     magic_path = tool_paths.get("magic")
     netgen_path = tool_paths.get("netgen")
     if not magic_path or not netgen_path:
+        # Unreachable after report.ok; guards against a partial manifest.
         return CheckOutcome(exitcodes.ENVIRONMENT_INCOMPLETE, _STATUS_ENVIRONMENT_INCOMPLETE,
                             "incomplete environment: Magic or Netgen path not resolved",
                             warnings=tuple(warnings))
@@ -411,16 +444,16 @@ def _run_check(
     netgen_binary_hash = sha256_file(Path(netgen_path))
     layout_hash = sha256_file(inputs.layout)
     schematic_hash = sha256_file(inputs.schematic)
-    # Also hash the PDK deck and Tcl scripts: they affect the verdict but
-    # aren't captured by a tool version string, and a change must
-    # invalidate the cache.
+    # The verdict also depends on the PDK deck (magicrc, Netgen setup) and on
+    # the Tcl scripts shipped in this package: record their digests and put
+    # them in the cache keys.
     magicrc_hash = sha256_file(magicrc)
     netgen_setup_hash = sha256_file(netgen_setup)
     drc_tcl_hash = sha256_file(toolchain.TCL_DIR / "drc.tcl")
     extract_tcl_hash = sha256_file(toolchain.TCL_DIR / "extract.tcl")
-    gdswrite_tcl_hash = sha256_file(toolchain.TCL_DIR / "gdswrite.tcl")
 
-    # See toolchain.run_extraction: Magic loads .mag cells by name.
+    # Magic loads .mag cells by name, not by path; see
+    # toolchain.run_extraction.
     if inputs.cell_format == "mag":
         view_for_magic = work_dir / f"{inputs.cell}.mag"
         shutil.copyfile(inputs.layout, view_for_magic)
@@ -428,7 +461,9 @@ def _run_check(
         view_for_magic = inputs.layout
 
     run_log: dict[str, Any] = {"state": "running", "steps": []}
-    # Persist the running state before invoking a subprocess.
+    # Written before the first subprocess: after a Ctrl-C or a crash, the
+    # next invocation requires --resume or --force instead of silently
+    # overwriting a state of unknown completeness.
     _write_json_atomic(out_dir / "run.json", run_log)
 
     drc_key = sha256_text("drc", layout_hash, magic_version, magic_binary_hash, report.pdk.commit_sha or "", pdk_variant,
@@ -442,8 +477,8 @@ def _run_check(
         ),
         lambda r: {"ok": r.ok, "error_count": r.error_count, "verdict": r.verdict,
                    "log_path": str(r.command.log_path), "argv": list(r.command.argv)},
-        lambda d: _CachedStepResult(ok=d["ok"], error_count=d["error_count"], verdict=d["verdict"],
-                                    log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
+        lambda d: _FakeResult(ok=d["ok"], error_count=d["error_count"], verdict=d["verdict"],
+                               log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
     )
     run_log["steps"].append({"name": "drc", "cached": drc_cached, "wall_seconds": drc_seconds,
                               "verdict": drc_result.verdict, "argv": list(drc_result.argv)})
@@ -459,35 +494,41 @@ def _run_check(
         ),
         lambda r: {"ok": r.ok, "spice_path": str(r.spice_path) if r.spice_path else None,
                    "log_path": str(r.command.log_path), "argv": list(r.command.argv)},
-        lambda d: _CachedStepResult(
-            ok=d["ok"], output_path=Path(d["spice_path"]) if d["spice_path"] else None,
-            log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
+        lambda d: _FakeResult(ok=d["ok"], spice_path=Path(d["spice_path"]) if d["spice_path"] else None,
+                               log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
     )
     run_log["steps"].append({"name": "extract", "cached": extract_cached, "wall_seconds": extract_seconds,
                               "ok": extract_result.ok, "argv": list(extract_result.argv)})
 
-    if extract_result.ok and extract_result.output_path and extract_result.output_path.is_file():
-        lvs_key = sha256_text("lvs", extract_result.output_path.name, sha256_file(extract_result.output_path),
+    if extract_result.ok and extract_result.spice_path and extract_result.spice_path.is_file():
+        lvs_key = sha256_text("lvs", extract_result.spice_path.name, sha256_file(extract_result.spice_path),
                                schematic_hash, netgen_version, netgen_binary_hash, report.pdk.commit_sha or "", pdk_variant,
-                               netgen_setup_hash)
+                               netgen_setup_hash, toolchain.LVS_RULE_VERSION)
         lvs_result, lvs_cached, lvs_seconds = _cached_step(
             cache_dir, "lvs", lvs_key, use_cache,
             lambda: toolchain.run_lvs(
-                extracted_spice=extract_result.output_path, golden_spice=inputs.schematic,
+                extracted_spice=extract_result.spice_path, golden_spice=inputs.schematic,
                 cell=inputs.cell, netgen_setup=netgen_setup, pdk_root=pdk_root_path,
                 pdk_variant=pdk_variant, work_dir=work_dir,
             ),
             lambda r: {"verdict": r.verdict, "log_path": str(r.command.log_path), "argv": list(r.command.argv),
-                       "comparison_path": str(r.comparison_path) if r.comparison_path else None},
-            lambda d: _CachedStepResult(
-                verdict=d["verdict"], log_path=Path(d["log_path"]), argv=tuple(d["argv"]),
-                comparison_path=Path(d["comparison_path"]) if d.get("comparison_path") else None),
+                       "comparison_path": str(r.comparison_path) if r.comparison_path else None,
+                       "black_boxes": list(r.black_boxes)},
+            lambda d: _FakeResult(verdict=d["verdict"], log_path=Path(d["log_path"]), argv=tuple(d["argv"]),
+                                   comparison_path=Path(d["comparison_path"]) if d.get("comparison_path") else None,
+                                   black_boxes=tuple(d["black_boxes"])),
         )
         lvs_verdict = lvs_result.verdict
         lvs_log = lvs_result.log_path
         lvs_comparison = lvs_result.comparison_path
+        if lvs_result.black_boxes:
+            warnings.append(
+                "LVS inconclusive: undefined subcircuit(s) that are not PDK setup primitives "
+                "were compared as black boxes, without checking their content: "
+                + ", ".join(lvs_result.black_boxes))
         run_log["steps"].append({"name": "lvs", "cached": lvs_cached, "wall_seconds": lvs_seconds,
-                                  "verdict": lvs_verdict, "argv": list(lvs_result.argv)})
+                                  "verdict": lvs_verdict, "argv": list(lvs_result.argv),
+                                  "black_boxes": list(lvs_result.black_boxes)})
     else:
         lvs_verdict = "error"
         lvs_log = extract_result.log_path
@@ -505,20 +546,20 @@ def _run_check(
         },
         "pdk_commit_source": report.pdk.commit_source,
         "pdk_files": {"magicrc_sha256": magicrc_hash, "netgen_setup_sha256": netgen_setup_hash},
-        "scripts": {
-            "drc_tcl_sha256": drc_tcl_hash,
-            "extract_tcl_sha256": extract_tcl_hash,
-            "gdswrite_tcl_sha256": gdswrite_tcl_hash,
-        },
+        "scripts": {"drc_tcl_sha256": drc_tcl_hash, "extract_tcl_sha256": extract_tcl_hash},
     }
 
-    # Record the informative KLayout DRC cross-check separately from Magic.
+    # KLayout DRC cross-check: recorded separately, never merged with the
+    # Magic DRC verdict, no effect on the exit code. There is no KLayout LVS
+    # cross-check.
     klayout_gds: Path | None = None
     klayout_drc_result: toolchain.KlayoutDrcResult | None = None
     if with_klayout and klayout_deck is not None:
         if inputs.cell_format == "gds":
             klayout_gds = inputs.layout
         else:
+            gdswrite_tcl_hash = sha256_file(toolchain.TCL_DIR / "gdswrite.tcl")
+            toolchain_block["scripts"]["gdswrite_tcl_sha256"] = gdswrite_tcl_hash
             gdswrite_key = sha256_text("gdswrite", layout_hash, magic_version, magic_binary_hash,
                                         report.pdk.commit_sha or "", pdk_variant, magicrc_hash,
                                         gdswrite_tcl_hash)
@@ -531,23 +572,24 @@ def _run_check(
                 ),
                 lambda r: {"ok": r.ok, "gds_path": str(r.gds_path) if r.gds_path else None,
                            "log_path": str(r.command.log_path), "argv": list(r.command.argv)},
-                lambda d: _CachedStepResult(
-                    ok=d["ok"], output_path=Path(d["gds_path"]) if d["gds_path"] else None,
-                    log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
+                lambda d: _FakeResult(ok=d["ok"],
+                                       spice_path=Path(d["gds_path"]) if d["gds_path"] else None,
+                                       log_path=Path(d["log_path"]), argv=tuple(d["argv"])),
             )
             run_log["steps"].append({"name": "gdswrite", "cached": gdswrite_cached,
                                       "wall_seconds": gdswrite_seconds, "ok": gdswrite_result.ok,
                                       "argv": list(gdswrite_result.argv)})
-            if gdswrite_result.ok and gdswrite_result.output_path:
-                klayout_gds = gdswrite_result.output_path
+            if gdswrite_result.ok and gdswrite_result.spice_path:
+                klayout_gds = gdswrite_result.spice_path
 
         if klayout_gds is not None:
             klayout_drc_result = toolchain.run_klayout_drc(
                 gds=klayout_gds, cell=inputs.cell, deck=klayout_deck, work_dir=work_dir,
             )
             klayout_version = doctor.probe_tool("klayout").version or "unknown"
-            # Record the deck as (path relative to the tech root, SHA-256)
-            # rather than a local absolute path.
+            # Record the deck as a path relative to the technology root plus
+            # its SHA-256: portable, and no local directory layout leaks into
+            # the manifest.
             klayout_deck_hash = sha256_file(klayout_deck)
             klayout_root = Path(klayout_tech_status.root)
             klayout_deck_rel = klayout_deck.resolve().relative_to(klayout_root.resolve()).as_posix()
@@ -581,7 +623,9 @@ def _run_check(
     }
 
     report_md = _render_report(inputs, drc_verdict, drc_result.error_count, lvs_verdict, tools, warnings,
-                                klayout_cross_check=toolchain_block.get("klayout_cross_check"))
+                                klayout_cross_check=toolchain_block.get("klayout_cross_check"),
+                                layout_label=relative_to_base(inputs.layout, base),
+                                schematic_label=relative_to_base(inputs.schematic, base))
     (out_dir / "report.md").write_text(report_md, encoding="utf-8")
 
     run_log["state"] = "completed"
@@ -597,6 +641,7 @@ def _run_check(
         "logs/lvs.log": lvs_log,
     }
     if lvs_comparison and lvs_comparison.is_file():
+        # Netgen's detailed device/pin matching.
         artifact_paths["logs/lvs.out"] = lvs_comparison
     if klayout_drc_result is not None:
         artifact_paths["logs/klayout-drc.log"] = klayout_drc_result.command.log_path
@@ -628,14 +673,15 @@ def _run_check(
         )
     except ManifestValidationError as exc:
         return CheckOutcome(exitcodes.TOOL_FAILURE, _STATUS_TOOL_FAILURE,
-                             f"invalid manifest despite a complete run: {exc}",
+                             f"manifest invalid after a complete run: {exc}",
                              warnings=tuple(warnings))
 
     manifest_dict = manifest.to_dict()
     manifest_path = out_dir / "manifest.json"
     manifest_path.write_text(manifest.to_json(), encoding="utf-8")
 
-    # Rendered after the manifest is written, so they can embed its hash.
+    # Badges derive from the manifest and are not hashed in it (that would
+    # be circular); rendered afterwards, they embed the manifest's digest.
     manifest_sha256 = sha256_file(manifest_path)
     badge_files = badge.render_all(inputs.cell, drc_verdict, lvs_verdict,
                                    manifest_sha256=manifest_sha256)
@@ -644,27 +690,32 @@ def _run_check(
 
     verdicts = {drc_verdict, lvs_verdict}
     if verdicts & {"error", "unknown"}:
-        # "unknown" is a parsing ambiguity, not an observed non-conformance.
+        # "unknown" is not a failed check but an inconclusive result: exit
+        # code 4, not 1.
         code, status = exitcodes.TOOL_FAILURE, _STATUS_TOOL_FAILURE
     elif verdicts == {"pass"}:
         code, status = exitcodes.OK, _STATUS_OK
     else:
         code, status = exitcodes.NOT_CLEAN, _STATUS_NOT_CLEAN
 
-    return CheckOutcome(code, status, f"drc={drc_verdict} lvs={lvs_verdict} -> {manifest_path}",
+    next_step = (f"; inspect {out_dir / 'logs'}" if code == exitcodes.TOOL_FAILURE else
+                 f"; inspect {out_dir / 'report.md'}" if code == exitcodes.NOT_CLEAN else "")
+    return CheckOutcome(code, status, f"drc={drc_verdict} lvs={lvs_verdict}; manifest: {manifest_path}{next_step}",
                          manifest=manifest_dict, manifest_path=manifest_path, warnings=tuple(warnings))
 
 
 @dataclass(frozen=True)
-class _CachedStepResult:
-    """Normalized result reconstructed from a cache entry."""
+class _FakeResult:
+    """Toolchain result rebuilt from the cache, with only the fields
+    ``_run_check`` reads."""
     ok: bool = True
     error_count: int | None = None
     verdict: str = "unknown"
-    output_path: Path | None = None
+    spice_path: Path | None = None
     comparison_path: Path | None = None
     log_path: Path = field(default_factory=lambda: Path("."))
     argv: tuple[str, ...] = ()
+    black_boxes: tuple[str, ...] = ()
 
 
 def _cached_step(cache_dir: Path, kind: str, key: str, use_cache: bool, run, to_dict, from_dict):
@@ -674,12 +725,13 @@ def _cached_step(cache_dir: Path, kind: str, key: str, use_cache: bool, run, to_
             data = json.loads(cache_path.read_text(encoding="utf-8"))
             result = from_dict(data)
             log_path = getattr(result, "log_path", None)
-            output_path = getattr(result, "output_path", None)
+            spice_path = getattr(result, "spice_path", None)
             comparison_path = getattr(result, "comparison_path", None)
-            # Only reusable if the files it references still exist.
+            # Reuse a cached result only if the files it references still
+            # exist; otherwise recompute.
             if (
                 (log_path is None or Path(log_path).is_file())
-                and (output_path is None or Path(output_path).is_file())
+                and (spice_path is None or Path(spice_path).is_file())
                 and (comparison_path is None or Path(comparison_path).is_file())
             ):
                 return result, True, 0.0
@@ -697,7 +749,7 @@ def _cached_step(cache_dir: Path, kind: str, key: str, use_cache: bool, run, to_
 
 
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    """Write JSON through a temporary file and rename."""
+    """Write via a temporary file so an interruption never leaves truncated JSON."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
@@ -705,7 +757,7 @@ def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
 
 def _guard_output_directory(out_dir: Path, *, source: Source, cell_id: str,
                             resume: bool, force: bool) -> None:
-    """Blocks silently overwriting output from a different provenance."""
+    """Refuse to overwrite an output produced for another cell or provenance."""
     if force:
         return
     manifest_path = out_dir / "manifest.json"
@@ -714,15 +766,15 @@ def _guard_output_directory(out_dir: Path, *, source: Source, cell_id: str,
             previous = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise UsageError(
-                f"existing output under {out_dir} is unreadable ({exc}) — choose a different --out or pass --force"
+                f"unreadable existing output in {out_dir} ({exc}); choose another --out or pass --force"
             ) from exc
         previous_source = previous.get("source", {})
         if (previous.get("cell_id") != cell_id
                 or previous_source.get("repository") != source.repository
                 or previous_source.get("commit") != source.commit):
             raise UsageError(
-                f"existing output under {out_dir} belongs to a different cell or provenance — "
-                "choose a different --out or pass --force"
+                f"existing output in {out_dir} belongs to another cell or provenance; "
+                "choose another --out or pass --force"
             )
     run_path = out_dir / "run.json"
     if run_path.is_file():
@@ -730,12 +782,12 @@ def _guard_output_directory(out_dir: Path, *, source: Source, cell_id: str,
             state = json.loads(run_path.read_text(encoding="utf-8")).get("state")
         except (OSError, json.JSONDecodeError) as exc:
             raise UsageError(
-                f"run state under {out_dir} is unreadable ({exc}) — choose a different --out or pass --force"
+                f"unreadable run state in {out_dir} ({exc}); choose another --out or pass --force"
             ) from exc
         if state == "running" and not resume:
             raise UsageError(
-                f"a run under {out_dir} is marked running or interrupted — "
-                "check that no process is still running, then retry with --resume, or choose a different --out"
+                f"a run in {out_dir} is marked as running or interrupted; "
+                "make sure no process is using it, then rerun with --resume, or choose another --out"
             )
 
 
@@ -745,14 +797,14 @@ def _dry_run_plan(inputs: CellInputs, out_dir: Path, magicrc: Path, netgen_setup
         ["magic", "-dnull", "-noconsole", "-rcfile", str(magicrc), "<tcl/{drc,extract}.tcl>"],
         disabled=disable_aslr_guard,
     )
-    netgen_argv = ["netgen", "-batch", "lvs", "<extracted> <cell>", "<golden> <cell>",
+    netgen_argv = ["netgen", "-batch", "lvs", "<extracted> <cell>", "<reference> <cell>",
                    str(netgen_setup), "<output.out>"]
     plan = [
         f"mkdir -p {out_dir}",
         (f"cp {inputs.layout} {out_dir}/work/{inputs.cell}.{inputs.cell_format}"
          if inputs.cell_format == "mag" else
-         "# gds: path supplied directly, no copy required"),
-        " ".join(magic_argv) + "   # DRC then extraction (two invocations, tcl/drc.tcl and tcl/extract.tcl)",
+         "# .gds: read from its path, no copy needed"),
+        " ".join(magic_argv) + "   # DRC, then extraction (two invocations: tcl/drc.tcl, tcl/extract.tcl)",
         " ".join(netgen_argv),
     ]
     return "\n".join(plan)
@@ -760,32 +812,35 @@ def _dry_run_plan(inputs: CellInputs, out_dir: Path, magicrc: Path, netgen_setup
 
 def _render_report(inputs: CellInputs, drc_verdict: str, drc_error_count: int | None,
                     lvs_verdict: str, tools: dict[str, str], warnings: list[str],
-                    klayout_cross_check: dict[str, Any] | None = None) -> str:
+                    klayout_cross_check: dict[str, Any] | None = None,
+                    layout_label: str | None = None, schematic_label: str | None = None) -> str:
     lines = [
-        f"# sky130-verify — {inputs.cell}",
+        f"# sky130-verify: {inputs.cell}",
         "",
         "| Check | Verdict |",
         "|---|---|",
-        f"| DRC | {drc_verdict}" + (f" ({drc_error_count} error(s))" if drc_error_count is not None else "") + " |",
+        f"| DRC | {drc_verdict}" + (f" ({drc_error_count} errors)" if drc_error_count is not None else "") + " |",
         f"| LVS | {lvs_verdict} |",
         "",
-        f"Layout: `{inputs.layout}` (format `{inputs.cell_format}`)",
+        f"Layout: `{layout_label or inputs.layout.name}` (`{inputs.cell_format}`)",
         "",
-        f"Golden schematic: `{inputs.schematic}`",
+        f"Reference schematic: `{schematic_label or inputs.schematic.name}`",
         "",
-        f"Tools: magic {tools.get('magic')} · netgen {tools.get('netgen')}",
+        f"Tools: magic {tools.get('magic')}; netgen {tools.get('netgen')}",
     ]
     if klayout_cross_check is not None:
+        # Separate section, never merged with the verdicts above, so that a
+        # disagreement between KLayout and Magic stays visible.
         count = klayout_cross_check.get("violation_count")
         lines += [
             "",
-            "## KLayout cross-check (DRC, recorded separately)",
+            "## KLayout DRC (informational)",
             "",
             f"Verdict: {klayout_cross_check.get('drc_verdict')}"
-            + (f" ({count} violation(s))" if count is not None else ""),
+            + (f" ({count} violations)" if count is not None else ""),
             f"Tool: {klayout_cross_check.get('version')}",
             f"Deck: `{klayout_cross_check.get('deck')}`",
         ]
     if warnings:
-        lines += ["", "## Warnings", ""] + [f"- ⚠ {w}" for w in warnings]
+        lines += ["", "## Warnings", ""] + [f"- {w}" for w in warnings]
     return "\n".join(lines) + "\n"

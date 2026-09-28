@@ -1,4 +1,4 @@
-"""Serializable contract for the eight-field per-cell manifest."""
+"""Schema and typed model for per-cell verification manifests."""
 
 from __future__ import annotations
 
@@ -15,9 +15,8 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40,64}$")
 _VERDICTS = frozenset({"pass", "fail", "error", "not_run", "unknown"})
 
-
 class ManifestValidationError(ValueError):
-    """The eight-field publication contract is not satisfied."""
+    """The eight-field manifest contract is violated."""
 
 
 def _relative_path(path: str, field: str) -> str:
@@ -29,19 +28,19 @@ def _relative_path(path: str, field: str) -> str:
 
 def _digest(value: str, field: str) -> str:
     if not _SHA256.fullmatch(value):
-        raise ManifestValidationError(f"{field} must be a hex SHA-256 digest")
+        raise ManifestValidationError(f"{field} must be a hexadecimal SHA-256 digest")
     return value
 
 
 def _git_sha(value: str, field: str) -> str:
     if not _GIT_SHA.fullmatch(value):
-        raise ManifestValidationError(f"{field} must be a 40-64 hex character Git SHA")
+        raise ManifestValidationError(f"{field} must be a git SHA of 40 to 64 hexadecimal digits")
     return value
 
 
 def _hash_map(value: Mapping[str, str], field: str) -> dict[str, str]:
     if not value:
-        raise ManifestValidationError(f"{field} cannot be empty")
+        raise ManifestValidationError(f"{field} must not be empty")
     return {_relative_path(path, field): _digest(digest, field) for path, digest in value.items()}
 
 
@@ -56,7 +55,7 @@ class Source:
             raise ManifestValidationError("source.repository must be a repository URL")
         _git_sha(self.commit, "source.commit")
         if not self.paths:
-            raise ManifestValidationError("source.paths cannot be empty")
+            raise ManifestValidationError("source.paths must not be empty")
         for path in self.paths:
             _relative_path(path, "source.paths")
 
@@ -70,7 +69,7 @@ class Pdk:
 
     def __post_init__(self) -> None:
         if not self.family or not self.variant or not self.repository:
-            raise ManifestValidationError("pdk must name a family, variant, and repository")
+            raise ManifestValidationError("pdk must name a family, a variant and a repository")
         _git_sha(self.commit_sha, "pdk.commit_sha")
 
 
@@ -83,7 +82,7 @@ class Verification:
 
     def __post_init__(self) -> None:
         if self.drc_verdict not in _VERDICTS or self.lvs_verdict not in _VERDICTS:
-            raise ManifestValidationError("verification.drc_verdict and lvs_verdict are a closed enum")
+            raise ManifestValidationError(f"verification.drc_verdict and lvs_verdict must be one of {sorted(_VERDICTS)}")
         if self.drc_log is not None:
             _relative_path(self.drc_log, "verification.drc_log")
         if self.lvs_log is not None:
@@ -92,7 +91,7 @@ class Verification:
 
 @dataclass(frozen=True)
 class VerificationManifest:
-    """Typed model of the eight required top-level blocks."""
+    """Typed model of the eight top-level fields."""
 
     schema_version: str
     cell_id: str
@@ -107,14 +106,14 @@ class VerificationManifest:
         if self.schema_version != SCHEMA_VERSION:
             raise ManifestValidationError(f"schema_version must be {SCHEMA_VERSION}")
         if not self.cell_id:
-            raise ManifestValidationError("cell_id cannot be empty")
+            raise ManifestValidationError("cell_id must not be empty")
         if not self.toolchain or not isinstance(self.toolchain.get("tools"), Mapping):
             raise ManifestValidationError("toolchain.tools is required")
         _hash_map(self.inputs, "inputs")
         _hash_map(self.artifacts, "artifacts")
 
     def to_dict(self) -> dict[str, Any]:
-        """Serialize the eight fields in schema order."""
+        """Serialize the eight fields in their contractual order."""
         return {
             "schema_version": self.schema_version,
             "cell_id": self.cell_id,
@@ -126,7 +125,8 @@ class VerificationManifest:
             "pdk": asdict(self.pdk),
             "toolchain": dict(self.toolchain),
             "inputs": _hash_map(self.inputs, "inputs"),
-            # drc_log/lvs_log: omit when absent rather than emit null.
+            # ``drc_log`` and ``lvs_log`` are optional: a missing log is
+            # omitted, never serialized as ``null``.
             "verification": {key: value for key, value in asdict(self.verification).items() if value is not None},
             "artifacts": _hash_map(self.artifacts, "artifacts"),
         }
@@ -137,7 +137,7 @@ class VerificationManifest:
 
 MANIFEST_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "$id": "https://github.com/clementchmlt/sky130-verify/schema/verification-manifest-1.0.0.json",
+    "$id": "urn:sky130-verification-reproducibility:schema:verification-manifest:1.0.0",
     "title": "Sky130 verification manifest",
     "type": "object",
     "additionalProperties": False,
@@ -194,6 +194,6 @@ MANIFEST_JSON_SCHEMA: dict[str, Any] = {
 
 
 def write_json_schema(path: Path) -> None:
-    """Writes the canonical schema with deterministic formatting."""
+    """Write the canonical schema with deterministic formatting."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(MANIFEST_JSON_SCHEMA, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

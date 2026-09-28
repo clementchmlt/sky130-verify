@@ -1,8 +1,8 @@
-# sky130-verify — .mag -> .gds conversion for the KLayout cross-check
-# (--with-klayout), which doesn't read Magic's native format.
+# sky130-verify: .mag to .gds conversion for the KLayout cross-check
+# (--with-klayout); KLayout does not read .mag.
 #
-# Input: SKY130VERIFY_CELL, loaded from work_dir/<cell>.mag. Output:
-# converted.gds in the cwd.
+# Input: the view copied to work_dir/<cell>.mag.
+# Output: converted.gds in the working directory.
 
 set cell $env(SKY130VERIFY_CELL)
 

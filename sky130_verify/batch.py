@@ -1,8 +1,4 @@
-"""``sky130-verify batch`` — several independent cells, one invocation.
-
-Each argument stays a complete electrical cell, verified by the same
-:func:`sky130_verify.check.run_check` as a standalone ``check``.
-"""
+"""Run a sequence of independent cell checks."""
 
 from __future__ import annotations
 
@@ -17,7 +13,7 @@ from .check import CheckOutcome, run_check
 @dataclass(frozen=True)
 class BatchOutcome:
     exit_code: int
-    results: tuple[tuple[str, CheckOutcome], ...]  # (label, outcome), in the given order
+    results: tuple[tuple[str, CheckOutcome], ...]  # (label, outcome), in argument order
 
     def to_json_dict(self) -> dict[str, Any]:
         return {
@@ -30,8 +26,9 @@ class BatchOutcome:
 
 
 def _unique_labels(targets: tuple[Path, ...]) -> list[str]:
-    """Output subdirectory name per cell, disambiguated when two targets
-    share a base name."""
+    """Output subdirectory name for each target: the target directory name,
+    suffixed when two targets share a base name (for example two libraries
+    that each contain ``inv``), so that no output overwrites another."""
     counts: dict[str, int] = {}
     for target in targets:
         counts[target.name] = counts.get(target.name, 0) + 1
@@ -62,7 +59,7 @@ def run_batch(
     with_klayout: bool = False,
     klayout_tech: str | None = None,
 ) -> BatchOutcome:
-    """Overall exit code is the worst of the individual codes."""
+    """Return the highest exit code from the cells checked."""
     labels = _unique_labels(targets)
     results: list[tuple[str, CheckOutcome]] = []
     worst = exitcodes.OK
