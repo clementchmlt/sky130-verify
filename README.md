@@ -6,7 +6,7 @@ verdicts, a provenance manifest, logs, a Markdown report, and badge files.
 ## Install
 
 Requires Python 3.10+, Magic, Netgen, and a Sky130A PDK installed through
-open_pdks. Once the first PyPI release is published, install with:
+open_pdks. Install from PyPI with:
 
 ```sh
 python3 -m pip install sky130-verify
@@ -16,7 +16,7 @@ sky130-verify --help
 The GitHub release also provides a wheel that can be installed directly:
 
 ```sh
-python3 -m pip install https://github.com/clementchmlt/sky130-verify/releases/download/v0.2.0/sky130_verify-0.2.0-py3-none-any.whl
+python3 -m pip install https://github.com/clementchmlt/sky130-verify/releases/download/v0.2.1/sky130_verify-0.2.1-py3-none-any.whl
 ```
 
 Run `sky130-verify doctor` to see which tools and PDK files are available.

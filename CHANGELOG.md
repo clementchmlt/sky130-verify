@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1 — 2026-09-28
+
+- Clarify PyPI installation instructions and update the GitHub wheel link.
+
 ## 0.2.0 — 2026-09-28
 
 - Improve verification reliability, provenance capture, manifest validation, and CLI diagnostics.

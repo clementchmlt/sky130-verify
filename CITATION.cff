@@ -4,7 +4,7 @@ message: >-
   available.
 title: "sky130-verify"
 type: software
-version: "0.2.0"
+version: "0.2.1"
 date-released: "2026-09-28"
 url: "https://github.com/clementchmlt/sky130-verify"
 repository-code: "https://github.com/clementchmlt/sky130-verify"
