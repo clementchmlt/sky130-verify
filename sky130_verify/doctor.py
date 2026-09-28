@@ -1,6 +1,7 @@
-"""Environment diagnostics for ``sky130-verify doctor`` and ``check``.
+"""Environment diagnosis for ``sky130-verify doctor``, also run before ``check``.
 
-Performs executable, version, and file-presence probes.
+Runs no verification: only version probes and file-presence checks, never
+DRC or LVS.
 """
 
 from __future__ import annotations
@@ -35,12 +36,12 @@ class PdkStatus:
     commit_sha: str | None
     note: str
     commit_source: str = "unknown"
-    commit_verified: bool = True
+    commit_consistent: bool = True
 
 
 @dataclass(frozen=True)
 class KlayoutTechStatus:
-    """KLayout technology resolution for --with-klayout."""
+    """KLayout technology used by --with-klayout; never required otherwise."""
 
     root: str | None
     deck_path: str | None
@@ -60,10 +61,11 @@ class DoctorReport:
 
     @property
     def ok(self) -> bool:
-        """Ready for ``check``: required tools found, PDK resolved with a
-        verified commit. ``setarch`` availability doesn't factor in."""
+        """Report whether required tools, PDK files, and commit are available."""
         required_ok = all(t.found for t in self.tools if t.required)
-        return required_ok and self.pdk.found and self.pdk.commit_sha is not None and self.pdk.commit_verified
+        # Without a known, consistent PDK commit the manifest cannot be
+        # replayed; refuse before running Magic and Netgen.
+        return required_ok and self.pdk.found and self.pdk.commit_sha is not None and self.pdk.commit_consistent
 
     def to_dict(self) -> dict:
         return {
@@ -92,7 +94,7 @@ class DoctorReport:
                 "found": self.pdk.found,
                 "commit_sha": self.pdk.commit_sha,
                 "commit_source": self.pdk.commit_source,
-                "commit_verified": self.pdk.commit_verified,
+                "commit_consistent": self.pdk.commit_consistent,
                 "note": self.pdk.note,
                 "hint": None if self.pdk.found else _REMEDIATION["pdk"],
             },
@@ -110,29 +112,39 @@ class DoctorReport:
         }
 
 
-# Netgen has no version flag; `-batch exit` just captures its startup
-# banner (see _BEST_EFFORT_VERSION_TOOLS below).
+# Version probes:
+#
+# - `magic --version` prints the version and exits without a display
+#   (opencircuitdesign.com/magic/userguide.html).
+# - Netgen has no version flag (`netgen.sh.in` accepts only -noc*/-bat*/-gui).
+#   `-batch exit` captures the startup banner, which doctor labels as such.
+# - `klayout -v` prints the program version and exits
+#   (klayout.de/command_args.html).
 _VERSION_PROBES: dict[str, tuple[str, ...]] = {
     "magic": ("magic", "--version"),
     "netgen": ("netgen", "-batch", "exit"),
     "klayout": ("klayout", "-v"),
 }
 
+# Tools without a version flag: their `version` is a startup banner.
 _BEST_EFFORT_VERSION_TOOLS = frozenset({"netgen"})
 
 _REQUIRED_TOOLS = ("magic", "netgen")
 
+RESOLVED = "resolved"
+
+# Where to get each missing component (official repositories only).
 _REMEDIATION = {
-    "magic": "build from https://github.com/RTimothyEdwards/magic (see its README/INSTALL)",
+    "magic": "build from https://github.com/RTimothyEdwards/magic (see its README and INSTALL)",
     "netgen": ("build from https://github.com/RTimothyEdwards/netgen (see its README), "
-               "or the `netgen-lvs` system package on Debian/Ubuntu"),
+               "or install the `netgen-lvs` package on Debian/Ubuntu"),
     "klayout": "official packages: https://www.klayout.de/build.html",
-    "pdk": ("manage the PDK version with ciel (https://github.com/fossi-foundation/ciel) "
-            "or volare (https://github.com/efabless/volare), then export PDK_ROOT, "
-            "or pass --pdk-root explicitly"),
+    "pdk": ("install the PDK with ciel (https://github.com/fossi-foundation/ciel) "
+            "or volare (https://github.com/efabless/volare), then export PDK_ROOT "
+            "or pass --pdk-root"),
     "klayout_tech": ("clone https://github.com/efabless/sky130_klayout_pdk at a fixed commit, "
-                      "then export KLAYOUT_TECH_PATH=<clone>/tech/sky130, "
-                      "or pass --klayout-tech explicitly"),
+                      "then export KLAYOUT_TECH_PATH=<clone>/tech/sky130 "
+                      "or pass --klayout-tech"),
 }
 
 
@@ -155,16 +167,13 @@ def probe_tool(name: str) -> ToolStatus:
 
 
 def resolve_pdk(pdk_root: str | None, variant: str, explicit_commit: str | None = None) -> PdkStatus:
-    """Resolve an installed Sky130A PDK.
-
-    Precedence: ``--pdk-root`` then ``$PDK_ROOT``.
-    """
+    """Resolve PDK files and a supplied or directly detectable Git commit."""
     if not pdk_root:
         pdk_root = os.environ.get("PDK_ROOT")
     if not pdk_root:
         return PdkStatus(root=None, variant=variant, magicrc=None, netgen_setup=None,
                           found=False, commit_sha=None, commit_source="unavailable",
-                          commit_verified=False,
+                          commit_consistent=False,
                           note="PDK_ROOT not set (neither --pdk-root nor the environment variable)")
 
     root = Path(pdk_root)
@@ -172,39 +181,45 @@ def resolve_pdk(pdk_root: str | None, variant: str, explicit_commit: str | None 
     netgen_setup = root / variant / "libs.tech" / "netgen" / f"{variant}_setup.tcl"
     found = magicrc.is_file() and netgen_setup.is_file()
 
-    detected_commit = gitinfo.head(root) or gitinfo.head(root.parent)
+    repo_root = gitinfo.toplevel(root)
+    detected_commit = (
+        gitinfo.head(repo_root)
+        if repo_root is not None and repo_root.resolve() in (root.resolve(), root.parent.resolve())
+        else None
+    )
     if explicit_commit is not None:
         commit_sha = explicit_commit
         commit_source = "explicit"
-        commit_verified = detected_commit is None or detected_commit == explicit_commit
+        commit_consistent = detected_commit is None or detected_commit == explicit_commit
     elif detected_commit is not None:
         commit_sha = detected_commit
         commit_source = "git"
-        commit_verified = True
+        commit_consistent = True
     else:
         commit_sha = None
         commit_source = "unavailable"
-        commit_verified = False
+        commit_consistent = False
 
-    note = "resolved" if found else (
-        f"expected open_pdks layout not found under {root / variant}"
-    )
+    missing_files = [str(path) for path in (magicrc, netgen_setup) if not path.is_file()]
+    note = RESOLVED if found else f"missing PDK file(s): {', '.join(missing_files)}"
     if found and commit_sha is None:
-        note += " ; commit not determined automatically — supply --pdk-commit"
-    elif found and not commit_verified:
-        note += (
-            " ; --pdk-commit does not match the clone's detected HEAD "
-            f"({detected_commit}) — fix the SHA or use the matching PDK"
+        note = "PDK files found but the PDK commit is unknown; pass --pdk-commit"
+    elif found and not commit_consistent:
+        note = (
+            f"--pdk-commit {explicit_commit} does not match PDK checkout HEAD "
+            f"{detected_commit}; pass the matching SHA or use that PDK checkout"
         )
 
     return PdkStatus(root=str(root), variant=variant, magicrc=str(magicrc) if found else None,
                       netgen_setup=str(netgen_setup) if found else None, found=found,
                       commit_sha=commit_sha, commit_source=commit_source,
-                      commit_verified=commit_verified, note=note)
+                      commit_consistent=commit_consistent, note=note)
 
 
 def resolve_klayout_tech(klayout_tech: str | None) -> KlayoutTechStatus:
-    """Resolve the KLayout technology root and its DRC deck."""
+    """Resolve the KLayout technology root (efabless/sky130_klayout_pdk,
+    expected layout ``<root>/drc/sky130A_mr.drc``); never cloned here.
+    ``--klayout-tech`` takes precedence over ``$KLAYOUT_TECH_PATH``."""
     if not klayout_tech:
         klayout_tech = os.environ.get("KLAYOUT_TECH_PATH")
     if not klayout_tech:
@@ -215,7 +230,7 @@ def resolve_klayout_tech(klayout_tech: str | None) -> KlayoutTechStatus:
     root = Path(klayout_tech)
     deck_path = root / "drc" / "sky130A_mr.drc"
     found = deck_path.is_file()
-    note = "resolved" if found else f"expected DRC deck not found under {deck_path}"
+    note = RESOLVED if found else f"expected DRC deck not found: {deck_path}"
     return KlayoutTechStatus(root=str(root), deck_path=str(deck_path) if found else None,
                               found=found, note=note)
 
@@ -238,23 +253,36 @@ def run_doctor(pdk_root: str | None, variant: str = "sky130A",
 
 
 def format_report_human(report: DoctorReport) -> str:
-    lines = [f"platform       : {report.platform_system} {report.platform_machine} (python {report.python_version})"]
+    def row(label: str, value: str) -> str:
+        return f"{label:<14}: {value}"
+
+    lines = [row("platform", f"{report.platform_system} {report.platform_machine} "
+                             f"(python {report.python_version})")]
     for t in report.tools:
-        marker = "ok" if t.found else ("MISSING" if t.required else "absent (optional)")
+        marker = "ok" if t.found else ("MISSING" if t.required else "not found (optional)")
         detail = t.version or t.path or ""
         if detail and t.version_is_best_effort:
-            detail += " (banner only, no version guarantee — netgen has no version flag)"
-        lines.append(f"tool {t.name:<9}: {marker}" + (f" — {detail}" if detail else ""))
+            detail += " (startup banner; netgen has no version flag)"
+        lines.append(row(t.name, marker + (f": {detail}" if detail else "")))
         if not t.found and t.name in _REMEDIATION:
             lines.append(f"  -> {_REMEDIATION[t.name]}")
-    lines.append(f"ASLR guard     : {'available (setarch)' if report.aslr_guard_available else 'unavailable — degraded, non-blocking'}")
+    lines.append(row("ASLR guard", "available (setarch -R)" if report.aslr_guard_available
+                     else "unavailable (not blocking; Magic runs with ASLR enabled)"))
     p = report.pdk
-    lines.append(f"PDK ({p.variant})   : {'resolved' if p.found else 'NOT RESOLVED'} — {p.note}")
+    if not p.found:
+        pdk_state = f"NOT RESOLVED: {p.note}"
+    elif p.note != RESOLVED:
+        pdk_state = f"INCOMPLETE: {p.note}"
+    else:
+        pdk_state = f"resolved, commit {p.commit_sha} ({p.commit_source})"
+    lines.append(row(f"PDK {p.variant}", pdk_state))
     if not p.found:
         lines.append(f"  -> {_REMEDIATION['pdk']}")
     if report.klayout_tech is not None:
         kt = report.klayout_tech
-        lines.append(f"KLayout tech   : {'resolved (optional)' if kt.found else 'not resolved (optional, --with-klayout)'} — {kt.note}")
+        kt_state = ("resolved (optional)" if kt.found
+                    else f"not resolved (optional, for --with-klayout): {kt.note}")
+        lines.append(row("KLayout tech", kt_state))
         if not kt.found:
             lines.append(f"  -> {_REMEDIATION['klayout_tech']}")
     lines.append("")

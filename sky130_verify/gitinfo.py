@@ -1,4 +1,8 @@
-"""Read-only git probes shared by doctor.py and check.py. No writes, no network."""
+"""Read-only git probes shared by doctor.py and check.py.
+
+No writes and no network access (no ``fetch`` or ``clone``): only
+``rev-parse``, ``config``, ``show`` and ``status`` on a local repository.
+"""
 
 from __future__ import annotations
 
@@ -30,7 +34,8 @@ def remote_url(path: Path) -> str | None:
 
 
 def blob_at_commit(repo_root: Path, relative_path: str, commit: str) -> bytes | None:
-    """Content of a path at ``commit``, or ``None`` if it didn't exist then."""
+    """Content of ``relative_path`` at ``commit``, or ``None`` if the path
+    does not exist in that commit (for example, a file added later)."""
     try:
         out = subprocess.run(
             ["git", "-C", str(repo_root), "show", f"{commit}:{relative_path}"],
@@ -44,10 +49,12 @@ def blob_at_commit(repo_root: Path, relative_path: str, commit: str) -> bytes | 
 
 
 def is_repo_dirty(path: Path) -> bool | None:
-    """``None`` if ``path`` isn't a git repository."""
+    """``True``/``False`` when known, ``None`` when ``path`` is not in a git
+    repository (not an error: the question does not apply)."""
     out = _run(["git", "-C", str(path), "status", "--porcelain"])
     if out is None:
-        # A clean tree also gives empty stdout, so distinguish "clean" from
-        # "not a repository" by checking for a toplevel.
+        # `_run` returns None both outside a repository and for a clean tree
+        # (empty `status --porcelain` output); tell them apart by checking
+        # for a repository explicitly.
         return None if toplevel(path) is None else False
     return True

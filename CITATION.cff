@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: >-
+  If you use sky130-verify, please cite this software release and its DOI when
+  available.
+title: "sky130-verify"
+type: software
+version: "0.2.0"
+date-released: "2026-09-28"
+url: "https://github.com/clementchmlt/sky130-verify"
+repository-code: "https://github.com/clementchmlt/sky130-verify"
+license: Apache-2.0
+authors:
+  - family-names: "Chamalet"
+    given-names: "Clément"
+    alias: "clementchmlt"
+    orcid: "https://orcid.org/0009-0005-2735-4106"
+keywords:
+  - sky130
+  - open-source-eda
+  - DRC
+  - LVS
+  - physical-verification
+abstract: >-
+  Headless single-cell physical verification for Sky130A. Runs Magic DRC and
+  Netgen LVS and writes separate verdicts, a provenance manifest, logs, a
+  Markdown report, and badge files.

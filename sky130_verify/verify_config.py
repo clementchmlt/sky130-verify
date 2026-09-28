@@ -1,9 +1,4 @@
-"""``verify.toml`` — explicit declaration of a cell's inputs, for cases
-where automatic discovery under the cell directory is ambiguous.
-
-Precedence: an explicit CLI flag wins over ``verify.toml``, which wins
-over automatic discovery.
-"""
+"""Load explicit cell, PDK and source settings from ``verify.toml``."""
 
 from __future__ import annotations
 
@@ -19,7 +14,7 @@ CONFIG_FILENAME = "verify.toml"
 
 
 class VerifyConfigError(Exception):
-    """``verify.toml`` present but invalid — exit code 2."""
+    """``verify.toml`` exists but is invalid: exit code 2 (usage error)."""
 
 
 @dataclass(frozen=True)
@@ -45,8 +40,7 @@ def find_verify_config(directory: Path) -> Path | None:
 
 
 def load_verify_config(path: Path, *, base_dir: Path) -> VerifyConfig:
-    """Loads and validates ``verify.toml``. ``layout``/``schematic`` paths
-    are resolved relative to ``base_dir``, not the process cwd."""
+    """Resolve cell paths relative to the configuration directory."""
     try:
         with path.open("rb") as f:
             data = tomllib.load(f)
@@ -64,22 +58,38 @@ def load_verify_config(path: Path, *, base_dir: Path) -> VerifyConfig:
     if not isinstance(cell, dict) or set(cell) - _KNOWN_CELL_KEYS:
         extra = set(cell) - _KNOWN_CELL_KEYS if isinstance(cell, dict) else set()
         raise VerifyConfigError(
-            f"{path}: invalid [cell]"
-            + (f" — unknown key(s): {', '.join(sorted(extra))}" if extra else "")
+            f"{path}: invalid [cell] table"
+            + (f"; unknown key(s): {', '.join(sorted(extra))}" if extra else "")
         )
     pdk = data.get("pdk", {})
     if not isinstance(pdk, dict) or set(pdk) - _KNOWN_PDK_KEYS:
-        raise VerifyConfigError(f"{path}: invalid [pdk]")
+        extra = set(pdk) - _KNOWN_PDK_KEYS if isinstance(pdk, dict) else set()
+        raise VerifyConfigError(f"{path}: invalid [pdk] table" +
+                                (f"; unknown key(s): {', '.join(sorted(extra))}" if extra else ""))
     source = data.get("source", {})
     if not isinstance(source, dict) or set(source) - _KNOWN_SOURCE_KEYS:
-        raise VerifyConfigError(f"{path}: invalid [source]")
+        extra = set(source) - _KNOWN_SOURCE_KEYS if isinstance(source, dict) else set()
+        raise VerifyConfigError(f"{path}: invalid [source] table" +
+                                (f"; unknown key(s): {', '.join(sorted(extra))}" if extra else ""))
+
+    for table_name, table in (("cell", cell), ("pdk", pdk), ("source", source)):
+        for key, value in table.items():
+            if not isinstance(value, str) or not value.strip():
+                raise VerifyConfigError(
+                    f"{path}: {table_name}.{key} must be a non-empty string; got {value!r}"
+                )
 
     def _resolve_path(value: object, field: str) -> Path | None:
         if value is None:
             return None
         if not isinstance(value, str) or not value:
             raise VerifyConfigError(f"{path}: {field} must be a non-empty string")
-        resolved = (base_dir / value).resolve()
+        supplied = Path(value)
+        if supplied.is_absolute() or ".." in supplied.parts:
+            raise VerifyConfigError(f"{path}: {field} = {value!r} must be relative to {base_dir}")
+        resolved = (base_dir / supplied).resolve()
+        if not resolved.is_relative_to(base_dir.resolve()):
+            raise VerifyConfigError(f"{path}: {field} = {value!r} resolves outside {base_dir}")
         if not resolved.is_file():
             raise VerifyConfigError(f"{path}: {field} = {value!r} not found under {base_dir}")
         return resolved

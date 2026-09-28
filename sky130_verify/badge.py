@@ -1,5 +1,4 @@
-"""Local badge rendering: badge.json (shields.io endpoint schema),
-badge.svg (flat style, no network call), and a Markdown snippet."""
+"""Render static and shields.io compatible badges."""
 
 from __future__ import annotations
 
@@ -8,7 +7,8 @@ import json
 
 _LABEL = "sky130-verify"
 
-# Approximate glyph widths (px, ~11px), good enough for short ASCII labels.
+# Approximate glyph widths in pixels for an ~11px Verdana/DejaVu Sans font.
+# Enough for short ASCII labels; other characters use the average _AVG.
 _AVG = 7.0
 _WIDTHS = {c: 6.0 for c in "iIl.:,'"} | {c: 9.5 for c in "mMW"}
 
@@ -23,6 +23,7 @@ class BadgeColor:
     name: str
 
 
+# Conventional shields.io colors.
 _GREEN = BadgeColor("#4c1", "brightgreen")
 _RED = BadgeColor("#e05d44", "red")
 _YELLOW = BadgeColor("#dfb317", "yellow")
@@ -56,13 +57,12 @@ def endpoint_json(cell_id: str, drc_verdict: str, lvs_verdict: str,
         "color": color.name,
     }
     if manifest_sha256 is not None:
-        # Ties the badge to the exact manifest it derives from.
         data["manifest_sha256"] = manifest_sha256
     return data
 
 
 def render_svg(label: str, message: str, color_hex: str) -> str:
-    """Flat two-segment badge in the shields.io visual style."""
+    """Render a two-segment SVG badge."""
     pad = 10
     label_w = round(_text_width(label) + 2 * pad)
     message_w = round(_text_width(message) + 2 * pad)
@@ -107,21 +107,17 @@ def render_svg(label: str, message: str, color_hex: str) -> str:
 '''
 
 
-def snippet_markdown(cell_id: str, badge_json_path: str, badge_svg_path: str) -> str:
-    return (
-        f"![sky130-verify: {cell_id}]({badge_svg_path})\n\n"
-        f"Dynamic badge (shields.io endpoint): "
-        f"`https://img.shields.io/endpoint?url=<raw-url-to>/{badge_json_path}`\n"
-    )
+def snippet_markdown(cell_id: str, badge_svg_path: str) -> str:
+    return f"![sky130-verify: {cell_id}]({badge_svg_path})\n"
 
 
 def render_all(cell_id: str, drc_verdict: str, lvs_verdict: str,
                 manifest_sha256: str | None = None) -> dict[str, str]:
-    """Returns the three artifacts' content without writing to disk."""
+    """Return the content of the three files; the caller writes them."""
     data = endpoint_json(cell_id, drc_verdict, lvs_verdict, manifest_sha256)
     color = color_for_verdicts(drc_verdict, lvs_verdict)
     svg = render_svg(data["label"], data["message"], color.hex)
-    md = snippet_markdown(cell_id, "badge.json", "badge.svg")
+    md = snippet_markdown(cell_id, "badge.svg")
     return {
         "badge.json": json.dumps(data, ensure_ascii=False, indent=2) + "\n",
         "badge.svg": svg,

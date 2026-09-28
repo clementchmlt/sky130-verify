@@ -123,7 +123,7 @@ class ResolvePdkTests(unittest.TestCase):
                 subprocess.run(args, cwd=root, check=True)
             status = doctor.resolve_pdk(str(root), "sky130A", explicit_commit="a" * 40)
             self.assertTrue(status.found)
-            self.assertFalse(status.commit_verified)
+            self.assertFalse(status.commit_consistent)
             self.assertIn("does not match", status.note)
 
 

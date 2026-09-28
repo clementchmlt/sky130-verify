@@ -1,8 +1,15 @@
-# sky130-verify — extraction of a single cell to SPICE.
+# sky130-verify: extraction of a single cell to SPICE.
 #
-# Input (env): SKY130VERIFY_VIEW, SKY130VERIFY_FORMAT (mag|gds),
-# SKY130VERIFY_CELL. ext2spice writes its default name (<cell>.spice) in
-# the cwd; the caller moves it (no -o flag across Magic 8.3).
+# environment variables (see tcl/drc.tcl).
+#
+# Input:
+#   SKY130VERIFY_VIEW    layout view path
+#   SKY130VERIFY_FORMAT  mag | gds
+#   SKY130VERIFY_CELL    cell name
+#
+# `ext2spice -o` is not available across all Magic 8.3 releases, so ext2spice
+# writes its default <cell>.spice in the working directory, where the Python
+# caller reads it.
 
 set view   $env(SKY130VERIFY_VIEW)
 set format $env(SKY130VERIFY_FORMAT)

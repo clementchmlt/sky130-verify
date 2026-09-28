@@ -1,133 +1,120 @@
 # sky130-verify
 
-Headless DRC/LVS verification for one Sky130A cell. It runs Magic for DRC,
-Netgen for LVS, and writes a provenance manifest and badge.
-
-## Prerequisites
-
-- Python 3.10 or newer
-- Magic and Netgen on `PATH`
-- A Sky130A PDK with Magic and Netgen technology files
-- Optional: KLayout and `efabless/sky130_klayout_pdk` for `--with-klayout`
-
-Manage PDK versions with [ciel](https://github.com/fossi-foundation/ciel) or
-[volare](https://github.com/efabless/volare).
+Run Magic DRC and Netgen LVS on one Sky130A cell. The CLI writes separate
+verdicts, a provenance manifest, logs, a Markdown report, and badge files.
 
 ## Install
 
-```sh
-git clone https://github.com/clementchmlt/sky130-verify.git
-cd sky130-verify
-python -m pip install .
-```
-
-Use `python -m pip install -e .` for development.
-
-## Quick start
+Requires Python 3.10+, Magic, Netgen, and a Sky130A PDK installed through
+open_pdks. Once the first PyPI release is published, install with:
 
 ```sh
-sky130-verify doctor --pdk-root "$PDK_ROOT" --pdk-commit "$PDK_COMMIT"
-sky130-verify check cells/my_opamp \
-  --pdk-root "$PDK_ROOT" --pdk-commit "$PDK_COMMIT" --out out/
+python3 -m pip install sky130-verify
+sky130-verify --help
 ```
 
-`check` writes `manifest.json`, `report.md`, `run.json`, `badge.svg`,
-`badge.json`, and raw logs under `out/`.
+The GitHub release also provides a wheel that can be installed directly:
 
-## Commands
+```sh
+python3 -m pip install https://github.com/clementchmlt/sky130-verify/releases/download/v0.2.0/sky130_verify-0.2.0-py3-none-any.whl
+```
 
-| Command | Description | Requires Magic/Netgen |
-|---|---|---|
-| `sky130-verify doctor` | Report tool and PDK resolution | no |
-| `sky130-verify check <cell>` | Run DRC, LVS, and write outputs | yes |
-| `sky130-verify batch <cell...>` | Check independent cells | yes |
-| `sky130-verify manifest validate <manifest.json>` | Validate a manifest offline | no |
-| `sky130-verify manifest show <manifest.json>` | Render a manifest as Markdown | no |
-| `sky130-verify badge render <manifest.json>` | Render badge files | no |
+Run `sky130-verify doctor` to see which tools and PDK files are available.
+Set `PDK_ROOT` to the directory containing
+`sky130A/libs.tech`, or pass `--pdk-root`. Checks also need the open_pdks commit
+SHA. Pass `--pdk-commit` when the PDK root is outside its Git checkout.
+If a checkout is detected, the supplied SHA must match its HEAD.
 
-Use `--help` for command options and examples.
+## Check a cell
 
-## Exit status
+Set `CELL_DIR` to a directory with one `.mag` or `.gds` layout and one `.spice`,
+`.spc`, `.cdl`, or `.sp` reference schematic. Run from the source repository
+root:
 
-| Code | Meaning |
-|---|---|
-| 0 | DRC and LVS passed |
-| 1 | At least one check failed |
-| 2 | Invalid input or invocation |
-| 3 | Magic, Netgen, or the PDK is unavailable |
-| 4 | Tool failure or unrecognized output |
-| 5 | Unsupported input scope |
+```sh
+sky130-verify check "$CELL_DIR" --pdk-root "$PDK_ROOT" --pdk-commit "$PDK_COMMIT"
+```
 
-With `--json`, each command writes one JSON object to stdout. Its common keys
-are `exit_code`, `status`, and `message`.
+The cell must belong to a Git repository with an `origin` remote, or you must
+pass `--source-repository` and `--source-commit`. The default output directory
+is `<repository root>/sky130-verify-out/<cell>`. Outside Git, it is
+`<cell directory>/sky130-verify-out/<cell>`. `--out` selects a path inside that
+same base. Use `--dry-run` to inspect the planned tool invocations.
 
-## Input selection
-
-By default, a cell directory must contain one `.mag` or `.gds` layout and one
-schematic. Use `verify.toml` to select files explicitly:
+For a directory with multiple candidate files, add `verify.toml` beside the
+cell files:
 
 ```toml
 [cell]
 layout = "layouts/my_opamp.mag"
-schematic = "netlists/my_opamp_golden.spice"
+schematic = "netlists/my_opamp.spice"
 name = "my_opamp"
 
 [pdk]
 variant = "sky130A"
-commit = "<open_pdks commit SHA>"
+commit = "0123456789abcdef0123456789abcdef01234567"
 
 [source]
 repository = "https://example.com/my-repo.git"
-commit = "<source commit SHA>"
+commit = "0123456789abcdef0123456789abcdef01234567"
 ```
 
-CLI flags take precedence over `verify.toml`, followed by automatic discovery.
-Each target describes one complete electrical cell.
+Paths in `verify.toml` are relative to that file. CLI options take precedence.
+The commit values above are examples; use the commits of your actual PDK and
+source. The CLI warns if checked files differ from the source commit.
 
-## Batch and KLayout
+## Commands and output
 
-`batch` runs `check` for each target and writes one output directory per cell.
-Its exit status is the highest status returned by an individual check.
+| Command | Result |
+|---|---|
+| `doctor` | Tool and PDK availability report |
+| `check <cell>` | DRC, extraction, LVS, and output files |
+| `batch <cell...>` | Sequential cell checks; `--fail-fast` stops at the first nonzero result |
+| `manifest validate <file>` | Schema validation; `--verify-files <root>` also checks recorded file hashes |
+| `manifest show <file>` | Markdown verdict summary; `--json` returns the full manifest |
+| `badge render <file>` | `badge.svg`, `badge.json`, and `snippet.md` |
 
-`--with-klayout --klayout-tech "$KLAYOUT_TECH_PATH"` runs the
-`sky130A_mr.drc` KLayout deck. The result is stored separately in the
-manifest and report; it does not change the Magic DRC result or exit status.
+Run `sky130-verify <command> --help` for options and defaults. Except for
+`--help` and `--version`, `--json` prints one JSON object on stdout with
+`exit_code`, `status`, and `message`; use the other fields for automation.
+Human usage and input errors go to stderr.
 
-## Outputs and provenance
+Each completed check writes `manifest.json`, `report.md`, `run.json`,
+`logs/{drc,extract,lvs}.log`, and badge files under its output directory.
+`logs/lvs.out` is recorded when Netgen produces it. The manifest records
+SHA-256 digests for inputs, tools, PDK files, scripts, and results. To verify
+its recorded files, pass the source repository root to
+`manifest validate --verify-files`.
 
-`manifest.json` records the source repository and commit, PDK commit,
-toolchain, input hashes, DRC/LVS results, and output hashes. Its JSON Schema
-is included in the package.
+`snippet.md` references `badge.svg` in the same directory. Adjust that path
+if you copy the snippet elsewhere.
+
+`--no-cache` reruns DRC, extraction, and LVS. Use `--resume` when an output is
+marked interrupted and no process is still writing there. `--force` permits
+reusing an output directory with different provenance. `--with-klayout` adds a
+separate informational DRC result; set `--klayout-tech` or
+`KLAYOUT_TECH_PATH` to its technology directory. The KLayout result does not
+affect the exit code.
+
+| Exit | Meaning |
+|---:|---|
+| 0 | DRC and LVS pass, or dry run completed |
+| 1 | DRC or LVS fails, or manifest validation fails |
+| 2 | Invalid argument or input file |
+| 3 | Required tool, PDK file, or PDK commit missing |
+| 4 | Tool failure, timeout, or inconclusive verdict |
+| 130 | Interrupted |
+
+## Container
+
+The container includes Magic and Netgen. It needs a mounted PDK and source
+repository. From the checkout root, build the image:
 
 ```sh
-sky130-verify manifest validate out/manifest.json --verify-files .
-sky130-verify badge render out/manifest.json
+docker build -t sky130-verify .
+docker run --rm --network=none --user "$(id -u):$(id -g)" \
+  -v "$PDK_ROOT:/pdk:ro" -v "$PWD:/work" -w /work \
+  sky130-verify check "$CELL_DIR" --pdk-root /pdk --pdk-commit "$PDK_COMMIT"
 ```
 
-Results are cached under `out/.cache/`. Use `--no-cache` to rerun every step,
-`--resume` for interrupted output, and `--force` to replace output with
-different provenance. `check` reports files that differ from their recorded
-source commit.
-
-## CI
-
-Install the PDK, then run `doctor` and `check` in CI. The repository workflows
-exercise the unit suite, wheel installation, and a Magic/Netgen check against
-a Sky130A PDK.
-
-## Limits
-
-Automatic macro sub-block detection is unavailable. CPU and memory telemetry
-is available only on Linux.
-
-## Security
-
-`check` requires no network access after environment resolution. Magic uses
-the resolved PDK `magicrc`. Magic and Netgen receive `PATH`, `HOME`,
-`PDK_ROOT`, and `PDK`.
-
-Please report vulnerabilities through GitHub private security advisories.
-
-## License
-
-Apache-2.0. See [LICENSE](LICENSE).
+For the container command, `CELL_DIR` must be relative to the checkout root.
