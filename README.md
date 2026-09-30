@@ -1,7 +1,13 @@
 # sky130-verify
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23052997.svg)](https://doi.org/10.5281/zenodo.23052997)
+
 Run Magic DRC and Netgen LVS on one Sky130A cell. The CLI writes separate
 verdicts, a provenance manifest, logs, a Markdown report, and badge files.
+
+The source code and distribution files for v0.2.1 are archived on
+[Zenodo](https://doi.org/10.5281/zenodo.23052997). Cite this DOI when using
+the software.
 
 ## Install
 

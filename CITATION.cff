@@ -1,13 +1,12 @@
 cff-version: 1.2.0
-message: >-
-  If you use sky130-verify, please cite this software release and its DOI when
-  available.
+message: If you use sky130-verify, please cite this software release.
 title: "sky130-verify"
 type: software
 version: "0.2.1"
 date-released: "2026-09-28"
-url: "https://github.com/clementchmlt/sky130-verify"
-repository-code: "https://github.com/clementchmlt/sky130-verify"
+doi: "10.5281/zenodo.23052997"
+url: "https://github.com/clementchamalet/sky130-verify"
+repository-code: "https://github.com/clementchamalet/sky130-verify"
 license: Apache-2.0
 authors:
   - family-names: "Chamalet"
