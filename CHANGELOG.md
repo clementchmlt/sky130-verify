@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2 — 2026-10-09
+
+- Update project URLs and author alias after the GitHub username change to `clementchamalet`.
+
 ## 0.2.1 — 2026-09-28
 
 - Clarify PyPI installation instructions and update the GitHub wheel link.
