@@ -22,7 +22,7 @@ sky130-verify --help
 The GitHub release also provides a wheel that can be installed directly:
 
 ```sh
-python3 -m pip install https://github.com/clementchmlt/sky130-verify/releases/download/v0.2.1/sky130_verify-0.2.1-py3-none-any.whl
+python3 -m pip install https://github.com/clementchamalet/sky130-verify/releases/download/v0.2.1/sky130_verify-0.2.1-py3-none-any.whl
 ```
 
 Run `sky130-verify doctor` to see which tools and PDK files are available.

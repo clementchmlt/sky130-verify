@@ -27,9 +27,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/clementchmlt/sky130-verify"
-Issues = "https://github.com/clementchmlt/sky130-verify/issues"
-Changelog = "https://github.com/clementchmlt/sky130-verify/blob/main/CHANGELOG.md"
+Repository = "https://github.com/clementchamalet/sky130-verify"
+Issues = "https://github.com/clementchamalet/sky130-verify/issues"
+Changelog = "https://github.com/clementchamalet/sky130-verify/blob/main/CHANGELOG.md"
 
 [project.scripts]
 sky130-verify = "sky130_verify.cli:main"
